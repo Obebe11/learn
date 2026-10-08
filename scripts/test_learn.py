@@ -310,6 +310,21 @@ class TestGraphScheduling(GraphBase):
         d = self.js("today", "--plan", "ai", day="2026-10-08")["plans"][0]["lessons"][0]
         self.assertEqual(d["requires"], ["P2", "A2"])
 
+    def test_only_one_junction_is_prioritised_per_day(self):
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["pace"]["lessons_per_day"] = 3
+        plan["units"][2]["lessons"].append(lesson("J2", "Second project", kind="junction", requires=["J1", "A2"]))
+        Path(self.gfile).write_text(json.dumps(plan))
+        self.run_cmd("create", "ai", "--file", self.gfile, "--update")
+        for lid in ("P1", "P2", "A1", "A2"):
+            self.run_cmd("done", lid, "--score", "1", day="2026-10-06")
+        day = "2026-10-07"
+        self.assertEqual(self.today_ids(day=day)[:1], ["J1"])  # first junction jumps the queue
+        self.run_cmd("done", "J1", "--score", "1", day=day)
+        nxt = self.today_ids(day=day)
+        self.assertEqual(nxt[0], "P3")  # J2 is unlocked but waits: one project a day is enough
+        self.assertIn("J2", nxt)  # still offered once other tracks had their turn
+
     def test_track_filter_and_unknown_track(self):
         lessons = self.js("today", "--plan", "ai", "--track", "AI")["plans"][0]["lessons"]
         self.assertEqual([l["id"] for l in lessons], ["A1", "A2"])  # whole quota from one branch when asked
