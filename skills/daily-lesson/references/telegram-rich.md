@@ -51,6 +51,7 @@ Prefer structure that renders natively over images. Each pattern: one idea, ≤ 
   ```
 
   He taps, then replies ✅ or ❌. Self-graded, so use it only when he asks for quick reviews; for real checks have him answer first and you judge.
+- **The plan's knowledge map**: `learn graph --format md` gives a ready-made rich table (track · progress · ready now) plus a list of ⭐ junctions with what they need — paste it as is. For a picture: `learn graph --format png` and send the file.
 - **Progress / day plan**: task list for today's steps; a table for `learn week`.
 - **Key takeaway**: one `>` quote at the end of a lesson.
 - **Geometry, plots, circuits** (things text can't draw): an image. Use the `visualize` makers if available, send the PNG; otherwise describe + a small table of coordinates. Collage/slideshow blocks exist for multi-image sequences if you call the API with `blocks`.

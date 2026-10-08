@@ -15,6 +15,8 @@ All state lives in plain files managed by `learn` (stdlib Python; data dir `$LEA
 learn init --language ru --timezone Europe/Moscow     # once
 learn plans | status | week
 learn create <slug> --file plan.json  [--update]      # validates, renders PLAN.md
+learn graph [--format text|md|mermaid|svg|png] [--level lessons|units]   # the knowledge map (graph plans)
+learn start [--date YYYY-MM-DD]                       # change the plan's start date (default: today)
 learn pause|resume|archive <slug>
 learn sync                                           # git-sync the data dir across devices
 ```
@@ -62,9 +64,56 @@ Design from the end. (Evidence for each rule: `docs/learning-science.md`.)
 
 Before saving, self-check: every outcome has a lesson and a check; every lesson maps to an outcome; the pass bars are concrete; total lessons ÷ (lessons/day × days/week) is the number of weeks you'll quote — and it matches the deadline, if there is one. If not, cut scope, don't raise the pace.
 
+### 4b. Linear plan or knowledge graph? (choose the shape)
+
+- **Linear** (default): one skill, a strict order, one topic after another.
+- **Graph** (`"graph": true`): use it when the goal needs **several skills**, when the learner wants to **jump between topics** and learn different things on the same day, or when they say "I also want to study X separately". A graph also keeps progress honest: each branch moves on its own, and the places where skills must be combined are explicit.
+
+**How a graph plan works**
+
+- Each **unit is a track** — a branch of knowledge (Python, AI, English…). Lessons inside a track are a chain by default (each requires the previous one). Different tracks are independent: any of them can be studied first.
+- A lesson may list `requires: ["P3", "A2"]` (lesson ids) when its prerequisites are not simply "the previous lesson".
+- A **junction** (`"kind": "junction"`) is a point where **several skills are needed at once** — a mini-project or integration task. It `requires` lessons from **2+ different tracks** (and possibly an earlier junction). It stays locked until all of them are done.
+- Every day `learn today` picks lessons from the *ready* frontier, **round-robin across tracks** (retries first, then junctions, then the track studied longest ago) — so a day naturally mixes topics, and each lesson still moves the overall goal forward.
+
+**Designing the graph**
+
+1. Split the goal into **2–5 tracks** that make sense on their own and can be studied in any order. More than 5 and the learner loses the thread.
+2. Within each track, order lessons by dependency (foundations first), exactly as in step 4.
+3. Find the **junctions**: where does the goal need two or more skills together? Typical: "build X using A and B", "explain/teach it in English", "apply the technique to a real dataset". Rules:
+   - The first junction should unlock early (after ~3–5 lessons in each parent track) so the learner feels the payoff; then roughly one junction per 5–6 lessons; the last one is the capstone.
+   - `requires` lists the **specific lessons** whose skills it uses, not "the whole track". Two or three parents is typical.
+   - Put junctions in their own unit (e.g. `PR` "Projects") so the map shows them as a separate row; `objective` names the combined performance ("Build a bot that … using functions and prompts"), `check` is the artifact it must produce and the bar it must meet.
+4. Keep `requires` minimal: only real dependencies. Don't chain tracks together out of tidiness — that turns the graph back into a line.
+5. Pace: `lessons_per_day` counts across all tracks. For real variety use 2–3 shorter lessons (20 min), not one long one.
+6. Run `learn create`, read its warnings (cycles and unknown ids are errors; a "junction" that doesn't combine two tracks is a warning), then **show the map** before asking for approval: `learn graph` (text — put it in a code block in chat), `learn graph --format md` (table, for rich Telegram), `learn graph --format png` (an image to send; needs `rsvg-convert`), `--format mermaid` for Obsidian.
+
+**Changing the graph later** (the learner decides to add a topic): add a new unit (a new track) and, when it makes sense, junction lessons that require lessons from it, then `learn create <slug> --file new.json --update`. Keep existing lesson ids stable. Converting an existing **linear** plan to a graph: set `"graph": true`; its units become parallel tracks, so add `requires` to the first lesson of any unit that must stay *after* the previous one (the CLI warns about exactly those).
+
+Example (two tracks and a junction; lessons abbreviated):
+
+```json
+{
+  "title": "AI career", "goal": "Ship a small AI tool", "graph": true,
+  "pace": {"lessons_per_day": 2, "days": ["mon","tue","wed","thu","fri"], "minutes_per_lesson": 25},
+  "units": [
+    {"id": "PY", "title": "Python", "lessons": [
+      {"id": "P1", "title": "Functions", "objective": "…", "check": "…"},
+      {"id": "P2", "title": "Lists and dicts", "objective": "…", "check": "…"},
+      {"id": "P3", "title": "Files and JSON", "objective": "…", "check": "…"}]},
+    {"id": "AI", "title": "AI basics", "lessons": [
+      {"id": "A1", "title": "What a model is", "objective": "…", "check": "…"},
+      {"id": "A2", "title": "Prompting", "objective": "…", "check": "…"}]},
+    {"id": "PR", "title": "Projects", "lessons": [
+      {"id": "J1", "title": "A chatbot script", "kind": "junction", "requires": ["P3", "A2"],
+       "objective": "Build a script that reads a file and asks a model about it", "check": "Runs on a new file; learner explains each part"}]}
+  ]
+}
+```
+
 ### 5. Present the plan and wait for a go-ahead
 
-In chat, show: the goal in one line; outcomes; units with lesson counts and milestones; pace and **projected finish date**; what a typical day looks like (≈ 5 min warm-up reviews + 2 lessons). Ask what to change. A wrong scope is cheap to fix now and expensive in week three. Don't create the plan until they approve.
+In chat, show: the goal in one line; outcomes; units with lesson counts and milestones; pace and **projected finish date**; what a typical day looks like (≈ 5 min warm-up reviews + 2 lessons). For a graph plan, show the map (see 4b) and explain in two sentences how days will mix tracks. Ask what to change. A wrong scope is cheap to fix now and expensive in week three. Don't create the plan until they approve.
 
 ### 6. Save it
 
@@ -106,7 +155,7 @@ Rules enforced by `learn create`: unique `L..`/`U..`/`O..` ids, `title`+`goal`, 
 
 ## Progress and review rhythm
 
-- **"How am I doing?"** → `learn status` (and `PLAN.md`): bar, pace, projected finish, reviews due. Report plainly, lead with what's going well.
+- **"How am I doing?"** → `learn status` (and `PLAN.md`): bar, pace, projected finish, reviews due; for a graph plan also per-track progress and what is ready. Report plainly, lead with what's going well. "Show me the map" → `learn graph`.
 - **Weekly** (Sunday, or the rest day): `learn week`. Ask two questions: what felt solid, what keeps slipping? Adjust the *practice type or resource* for what's slipping — not just the schedule. Add or change lessons by editing the plan (see Revising).
 - **Behind schedule**: `learn` already shows `behind N`. Do **not** schedule catch-up doubles — cramming defeats spacing. The projected finish date simply moves; tell the learner that's fine. If they've been behind for 2+ weeks, offer: lighten to 1 lesson/day, pause (`learn pause`), or cut a unit.
 - **Failed lessons** come back automatically (`retry`) — the next session re-teaches the gaps first.

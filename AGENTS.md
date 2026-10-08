@@ -8,10 +8,11 @@ Personal long-term learning system. Portable core: **skills** (Agent Skills `SKI
 - `skills/study-plan` — build/revise a plan from a goal (backward design) and track progress.
 - `skills/daily-lesson` — run one session: spaced-review warm-up → 1–2 lessons → wrap-up. Includes chat/Telegram mode.
 - `skills/visualize` — minimal diagrams, with fallbacks for chat apps.
+- `scripts/learn_graph.py` — knowledge-graph logic (tracks, junctions, day picking, text/md/mermaid/svg renderers), imported by `learn.py`.
 - `scripts/learn.py` — state CLI (`learn today | done | card add | review grade | status | nudge | sync …`). Tests: `python3 scripts/test_learn.py`.
 - `integrations/hermes` — installer + cron reminder for Hermes Agent/Telegram. `integrations/generic/notify.sh` — reminders for any setup.
 - `extensions/`, `agents/` — pi-only extras (`quiz`, `ask-user-question`, `md-log`, visual makers, `researcher`).
-- `docs/` (Russian) — platforms, Hermes+Telegram guide, learning-science notes, sync.
+- `docs/` (Russian) — knowledge graph, platforms, Hermes+Telegram guide, learning-science notes, sync.
 
 ## When asked to learn/teach something
 
