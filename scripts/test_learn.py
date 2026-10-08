@@ -207,6 +207,16 @@ class TestSync(Base):
                              capture_output=True, text=True, check=True).stdout
         self.assertEqual(json.loads(out)["plans"][0]["done"], 1)
 
+    def test_refuses_to_sync_inside_code_repo(self):
+        inside = str(Path(learn.CODE_REPO) / "learning")
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = learn.main(["--home", inside, "sync"])
+        self.assertEqual(code, 1)
+        self.assertIn("refusing to sync", err.getvalue())
+        self.assertFalse(Path(inside).exists())
+
     def test_not_a_repo(self):
         self.assertIn("git init", self.run_cmd("sync", expect=1))
 

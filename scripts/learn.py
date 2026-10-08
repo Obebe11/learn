@@ -36,6 +36,18 @@ class LearnError(Exception):
     pass
 
 
+CODE_REPO = Path(__file__).resolve().parent.parent
+
+
+def inside_code_repo(home):
+    """True if the data dir is inside this (public) code repository."""
+    try:
+        Path(home).expanduser().resolve().relative_to(CODE_REPO)
+        return (CODE_REPO / ".git").exists()
+    except ValueError:
+        return False
+
+
 # ----------------------------------------------------------------------------
 # storage
 # ----------------------------------------------------------------------------
@@ -482,6 +494,9 @@ def cmd_init(args):
         write_text(home / ".gitignore", ".tmp-*\n.DS_Store\n")
     if args.git and not (home / ".git").exists():
         run_git(home, "init", "-q")
+    if inside_code_repo(home):
+        print(f"⚠ {home} is inside the code repository. Your progress is personal: keep it outside "
+              f"(default ~/learning) or make sure it is git-ignored — never push it to a public repo.", file=sys.stderr)
     print(f"initialised {home} (language={cfg['language']}"
           + (f", timezone={cfg['timezone']}" if cfg.get("timezone") else "") + ")")
     print("tip: make this folder a private git repo and run `learn sync` to share progress across devices")
@@ -879,6 +894,9 @@ def cmd_sync(args):
     """Commit local changes, rebase onto the remote, push. Run at the start and
     end of a session when you learn from more than one device."""
     st = Store(args)
+    if inside_code_repo(st.home):
+        raise LearnError(f"refusing to sync: {st.home} is inside the code repository ({CODE_REPO}), which may be public. "
+                         "Move your data outside it (e.g. LEARN_HOME=~/learning) and sync that as its own PRIVATE repo.")
     st.require_home()
     if not (st.home / ".git").exists():
         raise LearnError(f"{st.home} is not a git repo. One-time setup:\n"
