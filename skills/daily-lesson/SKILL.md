@@ -66,7 +66,9 @@ Apply whenever the learner talks to you through a chat app (and by default if un
   (reply with a letter, or in your own words)
   ```
   Never reveal the answer before they reply. After the reply: ✅/❌, the right option, a 1–2 sentence explanation, then the next question. If the environment offers answer buttons (Hermes `clarify`, a `quiz`/`ask_user_question` tool), use them — but the same no-leak rule holds.
-- **No LaTeX, no Mermaid** in messaging apps (not rendered): write math in plain text/Unicode (`x² + 3x = 0`, `√2`, `a/b`), keep code in backticks or fenced blocks. Diagrams: a tiny ASCII/Unicode sketch in a code block (≤ 7 nodes), or an image if the environment can send one (see `visualize`).
+- **Check the format first.** `learn today` prints `chat_format plain|rich` (set with `learn config chat_format rich`).
+  - **plain** (default): no LaTeX, no Mermaid, no tables — they show as raw symbols. Write math in plain text/Unicode (`x² + 3x = 0`, `√2`, `a/b`), keep code in backticks or fenced blocks. Diagrams: a tiny ASCII/Unicode sketch in a code block (≤ 7 nodes), or an image if the environment can send one (see `visualize`).
+  - **rich** (Telegram rich messages, Bot API 10.1+; Hermes `rich_messages: true`): LaTeX (`$…$`, `$$…$$`), tables, task lists, collapsible `<details>` hints, tap-to-reveal `||spoilers||`, quotes. Read `references/telegram-rich.md` for the exact syntax and the visual patterns that replace Mermaid (still no Mermaid). Keep messages short anyway.
 - **Voice**: they may answer by voice (it arrives transcribed). Treat transcription slips generously.
 - **Interruptions are normal**: they may reply an hour later or run `/new`. Don't rely on chat history: everything durable is in the CLI (`done`, `card add`, `grade`). Resume from `learn today`.
 - **Time-box** if they say they're short on time: warm-up + one lesson is a full day; record it honestly.

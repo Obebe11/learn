@@ -24,13 +24,14 @@ The makers below need subagents plus the `visual-tools` extension (the pi setup)
 
 1. **Makers available** (the `subagent` tool and `agents/*-maker.md` exist) → use them as described below.
 2. **The viewer renders Mermaid** (Obsidian, GitHub, the Claude app) → a fenced ```` ```mermaid ```` block. You can't look at it, so keep it tiny (≤ 7 nodes), re-read every arrow against the idea, and prefer `graph TD`.
-3. **Chat apps / plain terminals** (Telegram, WhatsApp, SSH) → a small ASCII/Unicode sketch in a code block, same rules (≤ 7 elements, arrows re-checked):
+3. **Telegram with rich messages on** (`chat_format rich`; Bot API `sendRichMessage`) → no Mermaid, but native structure renders: nested lists for dependency maps, numbered lists with arrows for flows, pipe tables for comparisons, `$$…$$` for formulas, `<details>` for stepwise reveal. Patterns: `skills/daily-lesson/references/telegram-rich.md`. Geometry/plots still need an image (rung 5).
+4. **Chat apps / plain terminals** (Telegram plain, WhatsApp, SSH) → a small ASCII/Unicode sketch in a code block, same rules (≤ 7 elements, arrows re-checked):
    ````
    packets ──► ordering ──┐
       │                   ├──► reliable stream
       └────► retransmit ──┘
    ````
-4. **Environment can send images** (Hermes: a `MEDIA:/path/to/file.png` tag in the reply) *and* you can render one → send the PNG. Otherwise stay on rung 3.
+5. **Environment can send images** (Hermes: a `MEDIA:/path/to/file.png` tag in the reply) *and* you can render one → send the PNG. Otherwise stay on rung 3 or 4.
 
 The rest of this skill — when to draw, brief the idea down to its fewest elements, never decorate — applies on every rung. A missing visual is cheaper than a wrong one.
 

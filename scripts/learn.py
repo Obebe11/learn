@@ -28,6 +28,8 @@ DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 # Leitner boxes 1..7: days until the next review after a successful recall.
 INTERVALS = [1, 3, 7, 14, 30, 60, 120]
 KINDS = {"lesson", "review", "milestone"}
+CHAT_FORMATS = ("plain", "rich")  # rich = Telegram rich messages (tables, LaTeX, task lists, details)
+CONFIG_KEYS = {"language": None, "timezone": None, "chat_format": CHAT_FORMATS}
 DEFAULT_PACE = {"lessons_per_day": 2, "days": ["mon", "tue", "wed", "thu", "fri", "sat"],
                 "minutes_per_lesson": 25, "pass_score": 0.7}
 
@@ -486,6 +488,9 @@ def cmd_init(args):
     cfg.setdefault("language", args.language)
     if args.timezone:
         cfg["timezone"] = args.timezone
+    if args.chat_format:
+        cfg["chat_format"] = args.chat_format
+    cfg.setdefault("chat_format", "plain")
     save_json(home / "config.json", cfg)
     if not (home / "profile.md").exists():
         write_text(home / "profile.md", PROFILE_TEMPLATE.format(language=cfg["language"]))
@@ -497,9 +502,30 @@ def cmd_init(args):
     if inside_code_repo(home):
         print(f"⚠ {home} is inside the code repository. Your progress is personal: keep it outside "
               f"(default ~/learning) or make sure it is git-ignored — never push it to a public repo.", file=sys.stderr)
-    print(f"initialised {home} (language={cfg['language']}"
+    print(f"initialised {home} (language={cfg['language']}, chat_format={cfg['chat_format']}"
           + (f", timezone={cfg['timezone']}" if cfg.get("timezone") else "") + ")")
     print("tip: make this folder a private git repo and run `learn sync` to share progress across devices")
+
+
+def cmd_config(args):
+    home = home_dir(args)
+    if not home.exists():
+        raise LearnError(f"{home} does not exist — run `learn init` first")
+    cfg = load_config(home)
+    if args.key is None:
+        emit(args, cfg, "\n".join(f"{k} = {v}" for k, v in cfg.items()) or "(empty)")
+        return
+    if args.key not in CONFIG_KEYS:
+        raise LearnError(f"unknown key '{args.key}' (known: {', '.join(CONFIG_KEYS)})")
+    if args.value is None:
+        print(cfg.get(args.key, ""))
+        return
+    allowed = CONFIG_KEYS[args.key]
+    if allowed and args.value not in allowed:
+        raise LearnError(f"{args.key} must be one of: {', '.join(allowed)}")
+    cfg[args.key] = args.value
+    save_json(home / "config.json", cfg)
+    print(f"{args.key} = {args.value}")
 
 
 def cmd_plans(args):
@@ -605,8 +631,11 @@ def cmd_today(args):
     st = Store(args)
     plans = st.select(args.plan)
     t = st.today
-    data = {"date": iso(t), "weekday": DAYS[t.weekday()], "streak": streak(st), "plans": [], "reviews": []}
-    lines = [f"📅 {iso(t)} ({DAYS[t.weekday()]}) · streak {data['streak']}"]
+    data = {"date": iso(t), "weekday": DAYS[t.weekday()], "streak": streak(st),
+            "language": st.cfg.get("language", "en"), "chat_format": st.cfg.get("chat_format", "plain"),
+            "plans": [], "reviews": []}
+    lines = [f"📅 {iso(t)} ({DAYS[t.weekday()]}) · streak {data['streak']} · "
+             f"language {data['language']} · chat_format {data['chat_format']}"]
     all_due = []
     for slug, plan, prog in plans:
         lpd = plan["pace"]["lessons_per_day"]
@@ -830,7 +859,8 @@ def cmd_week(args):
 
 def cmd_nudge(args):
     """No-LLM daily reminder. Prints nothing when there is nothing to do, so a
-    scheduler can treat empty output as a silent tick."""
+    scheduler can treat empty output as a silent tick. --markdown emits rich
+    Markdown (bold, task list) for Telegram rich messages."""
     st = Store(args)
     if not st.home.exists() or not st.active():
         return
@@ -850,31 +880,36 @@ def cmd_nudge(args):
     sk = streak(st)
     last = last_activity(st)
     away = (t - last).days if last else 0
-    lines = []
+    md = args.markdown
+    b = (lambda x: f"**{x}**") if md else (lambda x: x)
+    item = (lambda l: f"- [ ] {l['id']} · {l['title']}") if md else (lambda l: f"• {l['id']} · {l['title']}")
     if ru:
-        lines.append("📚 С возвращением! Ничего не потеряно — начнём с лёгкого." if away >= 4 else "📚 Время учиться!")
+        head = "📚 С возвращением! Ничего не потеряно — начнём с лёгкого." if away >= 4 else "📚 Время учиться!"
         parts = []
         if todo:
             parts.append(f"{len(todo)} {ru_plural(len(todo), ('урок', 'урока', 'уроков'))}")
         if due_total:
             parts.append(f"{due_total} {ru_plural(due_total, ('повторение', 'повторения', 'повторений'))}")
-        lines.append("Сегодня: " + " + ".join(parts) + (f" · серия {sk} 🔥" if sk else ""))
-        lines += [f"• {l['id']} · {l['title']}" for _, l in todo]
-        if behind >= 2:
-            lines.append(f"Отстаём на {behind} — это нормально: план сдвинется, а не навалится.")
-        lines.append(f"Напиши {args.cta}, чтобы начать.")
+        today_line = "Сегодня: " + " + ".join(parts) + (f" · серия {sk} 🔥" if sk else "")
+        late = f"Отстаём на {behind} — это нормально: план сдвинется, а не навалится." if behind >= 2 else None
+        cta = f"Напиши {args.cta}, чтобы начать."
     else:
-        lines.append("📚 Welcome back! Nothing is lost — we'll start light." if away >= 4 else "📚 Time to learn!")
+        head = "📚 Welcome back! Nothing is lost — we'll start light." if away >= 4 else "📚 Time to learn!"
         parts = []
         if todo:
             parts.append(f"{len(todo)} lesson{'s' if len(todo) != 1 else ''}")
         if due_total:
             parts.append(f"{due_total} review{'s' if due_total != 1 else ''}")
-        lines.append("Today: " + " + ".join(parts) + (f" · streak {sk} 🔥" if sk else ""))
-        lines += [f"• {l['id']} · {l['title']}" for _, l in todo]
-        if behind >= 2:
-            lines.append(f"Behind by {behind} — that's fine: the plan shifts instead of piling up.")
-        lines.append(f"Send {args.cta} to start.")
+        today_line = "Today: " + " + ".join(parts) + (f" · streak {sk} 🔥" if sk else "")
+        late = f"Behind by {behind} — that's fine: the plan shifts instead of piling up." if behind >= 2 else None
+        cta = f"Send {args.cta} to start."
+    lines = [b(head), today_line, ""] if md else [head, today_line]
+    lines += [item(l) for _, l in todo]
+    if md and todo:
+        lines.append("")
+    if late:
+        lines.append(f"> {late}" if md else late)
+    lines.append(cta)
     print("\n".join(lines))
 
 
@@ -946,6 +981,11 @@ def build_parser():
     p.add_argument("--language", default="en", help="lesson/reminder language, e.g. ru, en")
     p.add_argument("--timezone", help="IANA timezone, e.g. Europe/Moscow")
     p.add_argument("--git", action="store_true", help="also `git init` the directory")
+    p.add_argument("--chat-format", choices=CHAT_FORMATS, help="plain (default) or rich (Telegram rich messages: tables, LaTeX, task lists)")
+
+    p = add("config", cmd_config, "show or set config (language, timezone, chat_format)", plan=False)
+    p.add_argument("key", nargs="?")
+    p.add_argument("value", nargs="?")
 
     add("plans", cmd_plans, "list plans with progress", plan=False)
 
@@ -1010,6 +1050,7 @@ def build_parser():
     p = add("nudge", cmd_nudge, "daily reminder text (empty output = nothing to do)", plan=False)
     p.add_argument("--language", help="override config language (ru/en)")
     p.add_argument("--cta", default="/daily-lesson", help="what the learner should send to start (default /daily-lesson)")
+    p.add_argument("--markdown", action="store_true", help="rich Markdown output (bold, task list, quote) for Telegram rich messages")
 
     add("sync", cmd_sync, "git commit + pull --rebase + push the data directory", plan=False)
     return ap
