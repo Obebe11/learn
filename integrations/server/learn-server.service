@@ -1,0 +1,26 @@
+# systemd *user* unit for the learn MCP/REST server (no root needed for this part).
+#
+#   mkdir -p ~/.config/systemd/user ~/.config/learn-server
+#   cp learn-server.service ~/.config/systemd/user/
+#   python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.config/learn-server/token
+#   chmod 600 ~/.config/learn-server/token
+#   systemctl --user daemon-reload && systemctl --user enable --now learn-server
+#   loginctl enable-linger "$USER"        # keep it running after you log out
+#
+# Assumes the clone is ~/learn and the data is ~/learning; edit the two paths otherwise.
+# Full guide: docs/remote-server.md
+[Unit]
+Description=learn - MCP and REST server for the learning system
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=LEARN_HOME=%h/learning
+ExecStart=/usr/bin/python3 %h/learn/scripts/learn_server.py --token-file %h/.config/learn-server/token --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

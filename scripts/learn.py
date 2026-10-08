@@ -12,6 +12,7 @@ Codex, OpenCode, pi, ...) because all state lives in plain files:
     plans/<slug>/PLAN.md     generated, human-readable view (checkboxes)
 
 Typical flow:  init -> create -> (today -> teach -> done / card add / review grade)* -> sync
+To use it from any device, run `learn_server.py` on a VPS (MCP + REST over the same data).
 Run `learn <command> -h` for details.
 """
 
@@ -21,8 +22,14 @@ import os
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
+try:
+    import fcntl  # POSIX only; without it commands simply run unlocked
+except ImportError:
+    fcntl = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find learn_graph.py next to the real file (symlink-safe)
 import learn_graph as G  # noqa: E402
@@ -118,6 +125,33 @@ def parse_date(s):
     return date.fromisoformat(s)
 
 
+def check_slug(slug):
+    """A plan slug becomes a directory name: refuse anything that could point elsewhere."""
+    if (not slug or slug.startswith((".", "-")) or any(c in slug for c in "/\\\0")
+            or len(slug) > 64):
+        raise LearnError(f"invalid plan slug {slug!r}: use a short name without slashes or leading dots/dashes")
+    return slug
+
+
+@contextmanager
+def home_lock(home):
+    """Exclusive lock on the data directory for the duration of one command.
+
+    Several writers can share one $LEARN_HOME (the MCP/API server, a Hermes cron
+    job, you in a shell); every command is read-modify-write, so without this two
+    of them could overwrite each other's progress.
+    """
+    fd = None
+    if fcntl is not None and home.is_dir():
+        fd = os.open(home, os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)  # closing releases the lock
+
+
 class Store:
     """All plans under one home directory."""
 
@@ -140,7 +174,7 @@ class Store:
         return sorted(p.name for p in self.plans_dir.iterdir() if (p / "plan.json").exists())
 
     def load(self, slug):
-        d = self.plans_dir / slug
+        d = self.plans_dir / check_slug(slug)
         if not (d / "plan.json").exists():
             raise LearnError(f"no such plan: {slug} (have: {', '.join(self.slugs()) or 'none'})")
         plan = load_json(d / "plan.json")
@@ -578,6 +612,24 @@ def cmd_config(args):
     print(f"{args.key} = {args.value}")
 
 
+def cmd_profile(args):
+    """Show the learner profile, or replace it from stdin (the agent keeps it up to date)."""
+    home = home_dir(args)
+    if not home.exists():
+        raise LearnError(f"{home} does not exist — run `learn init` first")
+    path = home / "profile.md"
+    if args.stdin:
+        text = args.stdin_text
+        if not text.strip():
+            raise LearnError("refusing to replace the profile with empty text")
+        write_text(path, text.rstrip("\n") + "\n")
+        print("profile updated")
+    elif path.exists():
+        print(path.read_text(encoding="utf-8").rstrip("\n"))
+    else:
+        raise LearnError("no profile yet — run `learn init`")
+
+
 def cmd_plans(args):
     st = Store(args)
     st.require_home()
@@ -594,7 +646,8 @@ def cmd_plans(args):
 def cmd_create(args):
     st = Store(args)
     st.require_home()
-    raw = sys.stdin.read() if args.stdin else Path(args.file).read_text(encoding="utf-8")
+    check_slug(args.slug)
+    raw = args.stdin_text if args.stdin else Path(args.file).read_text(encoding="utf-8")
     try:
         plan = json.loads(raw)
     except json.JSONDecodeError as e:
@@ -664,6 +717,16 @@ def cmd_render(args):
     for slug, plan, prog in st.select(args.plan):
         st.save(slug, plan, prog)
         print(f"rendered {st.plans_dir / slug / 'PLAN.md'}")
+
+
+def cmd_show(args):
+    """Print the plan itself: JSON to edit and feed back to `create --update`, or the rendered PLAN.md."""
+    st = Store(args)
+    slug, plan, prog = st.select_one(args.plan)
+    if args.md:
+        print(render_plan_md(slug, plan, prog, st.today))
+    else:
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
 
 
 def plan_status_summary(st, slug, plan, prog):
@@ -907,7 +970,7 @@ def cmd_card_add(args):
     find_lesson(plan, args.lesson)
     if args.stdin:
         try:
-            items = json.loads(sys.stdin.read())
+            items = json.loads(args.stdin_text)
         except json.JSONDecodeError as e:
             raise LearnError(f"stdin is not valid JSON: {e}")
     else:
@@ -1145,6 +1208,9 @@ def build_parser():
     p.add_argument("key", nargs="?")
     p.add_argument("value", nargs="?")
 
+    p = add("profile", cmd_profile, "show the learner profile (profile.md), or replace it with --stdin", plan=False)
+    p.add_argument("--stdin", action="store_true", help="replace profile.md with the text on stdin")
+
     add("plans", cmd_plans, "list plans with progress", plan=False)
 
     p = add("create", cmd_create, "create/update a plan from JSON (see skills/study-plan)", plan=False)
@@ -1155,6 +1221,8 @@ def build_parser():
     p.add_argument("--update", action="store_true", help="replace an existing plan but keep its progress")
 
     add("validate", cmd_validate, "validate a plan's JSON")
+    p = add("show", cmd_show, "print a plan: JSON (editable, for create --update) or --md")
+    p.add_argument("--md", action="store_true", help="the rendered PLAN.md instead of JSON")
     add("render", cmd_render, "regenerate PLAN.md")
     add("status", cmd_status, "progress, pace and projected finish")
 
@@ -1163,7 +1231,7 @@ def build_parser():
     p.add_argument("--track", help="graph plans: only lessons from this track (unit id) — e.g. 'today I want AI'")
 
     p = add("next", cmd_next, "upcoming lessons regardless of daily quota")
-    p.add_argument("-n", type=int, default=3)
+    p.add_argument("-n", "--count", dest="n", type=int, default=3, help="how many lessons (default 3)")
     p.add_argument("--track", help="graph plans: only this track (unit id)")
 
     p = add("graph", cmd_graph, "the knowledge map: tracks, junctions, what is ready/locked")
@@ -1230,8 +1298,11 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     args.home = getattr(args, "home", None)
     args.json = getattr(args, "json", False)
+    # Read stdin *before* taking the lock: a client that stalls mid-pipe must not block everyone else.
+    args.stdin_text = sys.stdin.read() if getattr(args, "stdin", False) else None
     try:
-        args.fn(args)
+        with home_lock(home_dir(args)):
+            args.fn(args)
     except LearnError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

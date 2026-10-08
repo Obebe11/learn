@@ -519,5 +519,61 @@ class TestSync(Base):
         self.assertIn("git init", self.run_cmd("sync", expect=1))
 
 
+class TestRemoteFoundations(Base):
+    """Things the MCP/API server relies on: safe slugs, shared-home locking, profile and plan access."""
+
+    def test_slug_cannot_escape_plans_dir(self):
+        for bad in ("../evil", "a/b", ".hidden", "a\\b", "x" * 65):
+            msg = self.run_cmd("create", bad, "--file", self.plan_file, expect=1)
+            self.assertIn("invalid plan slug", msg)
+            msg = self.run_cmd("done", "L01", "--plan", bad, expect=1)
+            self.assertIn("invalid plan slug", msg)
+        self.assertFalse((Path(self.home) / "evil").exists())
+        self.assertEqual(sorted(p.name for p in (Path(self.home) / "plans").iterdir()), ["py"])
+
+    def test_unicode_slug_is_fine(self):
+        self.run_cmd("create", "питон", "--file", self.plan_file)
+        self.assertIn("питон", self.run_cmd("plans"))
+
+    def test_profile_show_and_replace(self):
+        self.assertIn("Learner profile", self.run_cmd("profile"))
+        self.assertIn("profile updated", self.run_cmd("profile", "--stdin", stdin="# Я\n- люблю примеры"))
+        self.assertEqual(self.run_cmd("profile").strip(), "# Я\n- люблю примеры")
+        self.run_cmd("profile", "--stdin", stdin="  \n", expect=1)
+        self.assertIn("люблю", self.run_cmd("profile"))
+
+    def test_show_plan_json_roundtrips_into_update(self):
+        shown = self.run_cmd("show")
+        self.assertEqual(json.loads(shown)["title"], "Python basics")
+        self.run_cmd("done", "L01", "--score", "1")
+        self.run_cmd("create", "py", "--stdin", "--update", stdin=shown)
+        self.assertEqual(self.js("status")["plans"][0]["done"], 1)  # progress survived
+        self.assertIn("- [x] **L01**", self.run_cmd("show", "--md"))
+
+    def test_parallel_processes_do_not_lose_updates(self):
+        # Each child writes slowly, so without the home lock all eight would read the same
+        # next_card and clobber each other.
+        driver = ("import sys, time\n"
+                  f"sys.path.insert(0, {str(Path(learn.__file__).parent)!r})\n"
+                  "import learn\n"
+                  "orig = learn.write_text\n"
+                  "learn.write_text = lambda p, t: (time.sleep(0.05), orig(p, t))[1]\n"
+                  "sys.exit(learn.main(sys.argv[1:]))\n")
+        cmd = [sys.executable, "-c", driver, "--home", self.home, "card", "add", "--lesson", "L01", "--stdin"]
+        procs = [subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                 for _ in range(8)]
+        for i, p in enumerate(procs):  # feed everyone first, so they really do run at the same time
+            p.stdin.write(json.dumps([{"q": f"q{i}", "a": f"a{i}"}]))
+            p.stdin.close()
+        for p in procs:
+            err = p.stderr.read()
+            self.assertEqual(p.wait(timeout=60), 0, err)
+            p.stdout.close()
+            p.stderr.close()
+        cards = json.loads((Path(self.home) / "plans/py/progress.json").read_text())["cards"]
+        self.assertEqual(len(cards), 8)
+        self.assertEqual(len({c["id"] for c in cards}), 8)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
