@@ -1,0 +1,11 @@
+{
+  "name": "learn",
+  "owner": { "name": "obebe11" },
+  "plugins": [
+    {
+      "name": "learn",
+      "source": "./",
+      "description": "Study plans, daily lessons with spaced reviews, and the teach/visualize skills."
+    }
+  ]
+}
