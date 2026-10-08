@@ -8,7 +8,7 @@
 | **Память** | `scripts/learn.py` + каталог данных `~/learning` (JSON/Markdown) | нет — чистый Python 3.9+, без зависимостей |
 | **Инструменты UI** | pi-расширения `quiz`, `ask-user-question`, `md-log`, визуальные субагенты | да — это необязательные «апгрейды»; без них скиллы переходят на текстовые аналоги |
 
-Прогресс общий для всех сред, если каталог данных синхронизирован через git (`learn sync`, см. [data-and-sync.md](data-and-sync.md)). То есть можно начать план в Telegram, а продолжить на ноутбуке в Claude Code.
+Прогресс общий для всех сред, если каталог данных синхронизирован через git (`learn sync`, см. [data-and-sync.md](data-and-sync.md)) или лежит на одном сервере с MCP/API ([remote-server.md](remote-server.md)). То есть можно начать план в Telegram, а продолжить на ноутбуке в Claude Code.
 
 ## Сравнение
 
@@ -20,6 +20,7 @@
 | **OpenCode** | `opencode web` по Tailscale в браузере телефона | системный cron + `notify.sh` | читает `.claude/skills` и `.agents/skills` | открытый, любые модели |
 | **OpenClaw** | Telegram / WhatsApp / Discord | свои cron-средства или `notify.sh` | каталог скиллов OpenClaw | если уже стоит у вас |
 | **pi** (оригинал) | SSH + tmux (Termius, Blink) | `notify.sh` | репозиторий = `.pi` | максимум удобства на ПК: всплывающие `quiz`, схемы, `md-log` → Obsidian |
+| **Свой MCP/API-сервер на VPS** | любой MCP-клиент (Claude, Codex, Cursor…), curl, «Команды» iOS | `integrations/generic/notify.sh` или cron `learn nudge` на сервере | скиллы отдаёт сам сервер (`learn_skill`), ставить ничего не надо | один источник правды для всех устройств; [гайд](remote-server.md) |
 | **Любой чат** (ChatGPT, Claude.ai, Gemini) | приложение | напоминание в календаре | вставить [prompts/universal-tutor.md](../prompts/universal-tutor.md) | ничего не ставить; прогресс — «карточка» вручную |
 
 Telegram-боты с rich-сообщениями (Bot API 10.1+) показывают LaTeX, таблицы, чек-листы и сворачиваемые подсказки — см. [раздел 5 гайда по Hermes](hermes-telegram.md#5-rich-сообщения-формулы-таблицы-чек-листы-подсказки). Режим переключается `learn config chat_format plain|rich`.

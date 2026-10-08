@@ -9,7 +9,7 @@ One session = **warm-up reviews → 1–2 lessons → wrap-up**, about 40–50 m
 
 ## 0. Start
 
-1. `learn sync` (ignore "not a git repo"; if it reports a conflict, tell the learner and continue read-only).
+1. `learn sync` (ignore "not a git repo"; if it reports a conflict, tell the learner and continue read-only). *With `learn_*` MCP tools instead of a shell (remote server): skip this — there is one copy of the data; every `learn <cmd>` below is the tool `learn_<cmd>`, and `profile.md`/`config.json` are `learn_profile_get`/`learn_config_get`.*
 2. Read `<data dir>/profile.md` and `config.json` → lesson language, pace preferences. Speak that language.
 3. `learn today` (add `--plan <slug>` if several plans and the learner named one). It lists today's lessons, any warm-up reviews, streak and pace.
    - No plan yet → hand over to `study-plan`.

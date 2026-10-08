@@ -1,0 +1,9 @@
+# TLS front for learn-server. Caddy fetches and renews the certificate by itself.
+# Point an A/AAAA record for the name at the VPS, open ports 80 and 443, then:
+#   sudo cp Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
+#
+# Do NOT enable Caddy's `log` directive if you use the /t/<token>/ URL form:
+# the token would end up in the access log. The Authorization header is not logged.
+learn.example.com {
+	reverse_proxy 127.0.0.1:8787
+}

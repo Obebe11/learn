@@ -23,6 +23,8 @@ learn sync                                           # git-sync the data dir acr
 
 At the start: `learn sync` (ignore "not a git repo"), `learn plans`, and read `<data dir>/profile.md`. Reply in the language set in `config.json`/profile.
 
+*Remote server (`learn_*` MCP tools, no shell):* skip `learn sync`; `learn <cmd>` is the tool `learn_<cmd>`; read/write the profile with `learn_profile_get`/`learn_profile_set`; create or revise a plan by passing the plan object to `learn_create` (`update: true` to revise; `learn_show` returns the current JSON) instead of writing files.
+
 ## Chat-mode etiquette (phone / Telegram / WhatsApp)
 
 If the learner is on a messaging gateway: one question per message, short messages (≈ under 1,000 characters), no Mermaid ever. Check `chat_format` (`learn config chat_format`): `plain` → no tables or LaTeX (they show as raw symbols; use plain text/Unicode); `rich` (Telegram rich messages) → tables, LaTeX and task lists are fine — e.g. present the plan outline as a table of units and a task list for the first week (syntax: `skills/daily-lesson/references/telegram-rich.md`). Offer numbered choices instead of open forms. Never dump the whole JSON plan into chat; show the outline.

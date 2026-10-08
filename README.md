@@ -31,8 +31,10 @@
 | `skills/teach` | Методика: безусловные истины сначала; «как я мог бы это открыть сам?»; probe → plan → teach. Теперь с запасными вариантами без pi-инструментов |
 | `skills/visualize` | Минимальные верные схемы (с запасными вариантами для чатов) |
 | `scripts/learn.py` | **Новое.** CLI прогресса без зависимостей: планы, уроки, карточки повторения (коробки Лейтнера), серия, прогноз, напоминание, `sync` через git |
+| `scripts/learn_server.py` | **Новое.** MCP + REST сервер поверх `learn.py`: один источник правды на VPS, учиться можно с любого устройства. Токен, HTTPS через Caddy, без зависимостей — **[docs/remote-server.md](docs/remote-server.md)** |
 | `integrations/hermes/` | **Новое.** Установка под Hermes + cron-напоминание без LLM (0 токенов) |
 | `integrations/generic/notify.sh` | **Новое.** Напоминание в Telegram/ntfy из обычного cron для любой среды |
+| `integrations/server/` | **Новое.** systemd-служба и Caddyfile для `learn_server.py` |
 | `prompts/universal-tutor.md` | **Новое.** Один промпт для любого чата без установки (прогресс — «карточкой») |
 | `extensions/`, `agents/` | Оригинал для pi: `quiz`, `ask-user-question`, `md-log` (→ Obsidian), `visual-tools`, субагенты |
 | `docs/` | Руководства (по-русски) |
@@ -66,13 +68,24 @@ git clone https://github.com/obebe11/learn .pi     # из корня вашег�
 
 Остальное (расширения, субагенты, Obsidian) — как раньше, см. раздел «pi» ниже.
 
-### Вариант 4 — просто чат
+### Вариант 4 — свой сервер на VPS: MCP/API для любого устройства
+
+```bash
+git clone https://github.com/obebe11/learn ~/learn && ln -sf ~/learn/scripts/learn.py ~/.local/bin/learn
+learn init --language ru --timezone Europe/Moscow
+mkdir -p ~/.config/learn-server && python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.config/learn-server/token && chmod 600 ~/.config/learn-server/token
+LEARN_HOME=~/learning python3 ~/learn/scripts/learn_server.py --token-file ~/.config/learn-server/token   # 127.0.0.1:8787
+```
+
+Дальше служба systemd, Caddy (HTTPS) и подключение Claude Code / любого MCP-клиента / curl — в **[docs/remote-server.md](docs/remote-server.md)**. Прогресс хранится только на сервере, синхронизировать устройства не нужно.
+
+### Вариант 5 — просто чат
 
 Вставьте [prompts/universal-tutor.md](prompts/universal-tutor.md) в инструкции проекта ChatGPT / Claude.ai / Gemini.
 
 ## Где живёт прогресс
 
-В `~/learning` (не в этом репозитории): `plans/<slug>/plan.json`, `progress.json` и читаемый `PLAN.md` с чекбоксами. Чтобы учиться с разных устройств, сделайте этот каталог **приватным** git-репозиторием и вызывайте `learn sync` (скиллы делают это сами в начале и конце занятия). См. [docs/data-and-sync.md](docs/data-and-sync.md).
+В `~/learning` (не в этом репозитории): `plans/<slug>/plan.json`, `progress.json` и читаемый `PLAN.md` с чекбоксами. Чтобы учиться с разных устройств, есть два пути: **приватный git** и `learn sync` (скиллы делают это сами в начале и конце занятия) — или **сервер на VPS** с MCP/API, где данные лежат в одном месте и конфликтов не бывает ([docs/remote-server.md](docs/remote-server.md)). См. также [docs/data-and-sync.md](docs/data-and-sync.md).
 
 ## Команда `learn`
 
@@ -87,12 +100,14 @@ learn done L07 --score 0.8 --note "путает X и Y"     # записать �
 learn card add --lesson L07 --stdin                  # карточки: [{"q": "...", "a": "..."}]
 learn review grade <plan>/C012 pass|fail             # результат повторения
 learn status | week | plans                          # прогресс, темп, прогноз окончания
+learn show [--md]                                    # сам план: JSON (для правки и create --update) или PLAN.md
+learn profile [--stdin]                              # профиль ученика (profile.md): показать / заменить текстом из stdin
 learn pause|resume|archive <slug>
 learn nudge                                          # текст напоминания (пусто = нечего слать)
 learn sync                                           # git: commit + pull --rebase + push
 ```
 
-Все команды понимают `--json`. Тесты: `python3 scripts/test_learn.py`.
+Все команды понимают `--json`. Тесты: `python3 scripts/test_learn.py` и `python3 scripts/test_learn_server.py`. Параллельные вызовы `learn` (сервер, cron, вы) безопасны: команда берёт блокировку каталога данных.
 
 ## Принципы плана
 
@@ -100,7 +115,7 @@ learn sync                                           # git: commit + pull --reba
 
 ## Что проверено
 
-`learn.py`, `install.sh`, `notify.sh` и пример плана из скилла запущены и покрыты тестами. Сами агенты (Hermes, Claude Code и др.) в этой работе не запускались: форматы и команды Hermes взяты из его документации, остальные среды описаны по публичным источникам — см. раздел «Что проверено, а что нет» в [docs/platforms.md](docs/platforms.md).
+`learn.py`, `learn_server.py`, `install.sh`, `notify.sh` и пример плана из скилла запущены и покрыты тестами; сервер проверен официальным Python-клиентом MCP (подробности и что осталось непроверенным — в [docs/remote-server.md](docs/remote-server.md)). Сами агенты (Hermes, Claude Code и др.) в этой работе не запускались: форматы и команды Hermes взяты из его документации, остальные среды описаны по публичным источникам — см. раздел «Что проверено, а что нет» в [docs/platforms.md](docs/platforms.md).
 
 ---
 
