@@ -18,9 +18,25 @@ This teaching system builds a **dependency graph in the learner's head** — axi
 
 Do NOT visualize when prose or a single equation already carries it. A decorative diagram that just restates the sentence next to it adds noise and a chance to be wrong. When in doubt, don't — a missing visual is cheaper than a false one.
 
+## No makers here? Fallback ladder
+
+The makers below need subagents plus the `visual-tools` extension (the pi setup). In other environments (Hermes/Telegram, Claude Code, Codex, OpenCode…) pick the first rung that works:
+
+1. **Makers available** (the `subagent` tool and `agents/*-maker.md` exist) → use them as described below.
+2. **The viewer renders Mermaid** (Obsidian, GitHub, the Claude app) → a fenced ```` ```mermaid ```` block. You can't look at it, so keep it tiny (≤ 7 nodes), re-read every arrow against the idea, and prefer `graph TD`.
+3. **Chat apps / plain terminals** (Telegram, WhatsApp, SSH) → a small ASCII/Unicode sketch in a code block, same rules (≤ 7 elements, arrows re-checked):
+   ````
+   packets ──► ordering ──┐
+      │                   ├──► reliable stream
+      └────► retransmit ──┘
+   ````
+4. **Environment can send images** (Hermes: a `MEDIA:/path/to/file.png` tag in the reply) *and* you can render one → send the PNG. Otherwise stay on rung 3.
+
+The rest of this skill — when to draw, brief the idea down to its fewest elements, never decorate — applies on every rung. A missing visual is cheaper than a wrong one.
+
 ## Choose the maker
 
-Two makers, discovered from `.pi/agents/`:
+Two makers, discovered from the agents directory (`agents/` in this repo, `.pi/agents/` in pi):
 
 - **`mermaid-maker`** — structural/relational visuals: dependency graphs, flowcharts, sequence/state/ER/class diagrams, trees, mindmaps, timelines. This is the default and fits the dependency-graph pedagogy directly.
 - **`svg-maker`** — spatial/geometric visuals Mermaid can't lay out: exact coordinates, geometry figures, number lines, vectors, plots, custom shapes.

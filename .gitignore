@@ -16,3 +16,19 @@ __pycache__/
 # Runtime state
 .memory/
 *.log
+
+# Personal learning data — this repo is public. Progress lives in $LEARN_HOME
+# (default ~/learning, outside this repo); these rules catch it if you put it here.
+/learning/
+/data/
+/my-learning/
+/plans/
+/profile.md
+/config.json
+progress.json
+**/plans/*/plan.json
+**/plans/*/PLAN.md
+# generated/personal files from the Hermes installer
+integrations/hermes/learn-nudge.sh
+.env
+.env.*

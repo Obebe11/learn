@@ -1,0 +1,8 @@
+{
+  "name": "learn",
+  "description": "Long-term learning system: study plans, spaced-repetition daily lessons, and a teaching method built on understanding over memorising.",
+  "version": "1.0.0",
+  "author": { "name": "obebe11" },
+  "repository": "https://github.com/obebe11/learn",
+  "keywords": ["learning", "education", "spaced-repetition", "study-plan"]
+}
