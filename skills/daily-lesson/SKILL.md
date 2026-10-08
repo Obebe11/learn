@@ -17,6 +17,17 @@ One session = **warm-up reviews → 1–2 lessons → wrap-up**, about 40–50 m
 4. One-line opener: streak, today's plan (e.g. "2 lessons + 4 reviews, ≈ 45 min"). If they've been away 4+ days: no guilt, no catch-up speech — "welcome back, we start light".
 5. If a lesson was started earlier but never recorded (it won't appear as done), start it again with a 2-sentence recap.
 
+### Graph plans (several tracks): jumping between topics on purpose
+
+If `learn today` says **graph plan**, the plan is a map of parallel *tracks* (Python, AI, …) joined by ⭐ *junctions* — lessons that need several skills at once.
+
+- Today's lessons come from **different tracks** on purpose. Teach them in the order listed; between topics give a one-line bridge ("switching gears: from Python to AI — notice how X from before shows up again"). Mixing topics is not a distraction: the repeated "what was this again?" effort is part of why it sticks. Say this once, briefly, the first time.
+- **After every `learn done`, run `learn today` again**: finishing a lesson can unlock new ones (including a junction), and the next pick accounts for what you taught today.
+- If a lesson ends as **retry**, don't teach lessons that depend on it today (they're locked until it passes).
+- **The learner can steer.** "Today I only want AI" → `learn today --track AI` (track = unit id as shown by `learn graph`). "What can I study?" / "show the map" → `learn graph` (chat: text in a code block; `chat_format rich`: `--format md`; if the gateway can send images and `rsvg-convert` exists: `--format png` and send the path, e.g. Hermes `MEDIA:<path>`). Any *ready* lesson may be taken out of order: `learn done <id>`; a locked one needs its prerequisites first (`--force` only if they clearly already know them).
+- **Junction lessons (⭐)** are the payoff. Start with a short recall of the prerequisite lessons it lists (use their review cards), then give a real task that needs *both* skills; grade it against its `check`. When one unlocks, say so — "you now have both skills needed for J1".
+- **End of day**: show the map in one glance (`learn graph`), pointing out what just unlocked.
+
 ## 1. Warm-up: retrieval before anything new (≈ 5 min)
 
 For each due card from `learn today` (cap ~6; pull more only if asked):

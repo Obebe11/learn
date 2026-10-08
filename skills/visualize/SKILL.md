@@ -18,6 +18,10 @@ This teaching system builds a **dependency graph in the learner's head** — axi
 
 Do NOT visualize when prose or a single equation already carries it. A decorative diagram that just restates the sentence next to it adds noise and a chance to be wrong. When in doubt, don't — a missing visual is cheaper than a false one.
 
+## Plan and skill maps: use `learn graph`, don't hand-draw
+
+For the learner's **study plan / knowledge map** (tracks, junctions, ready vs locked), never draw it yourself — the CLI knows the real state: `learn graph` (text for chat code blocks), `--format md` (rich Telegram table), `--format mermaid` (Obsidian/GitHub), `--format svg|png` (image file; PNG needs `rsvg-convert`/inkscape/ImageMagick-with-SVG), `--level units` for a one-line-per-track overview.
+
 ## No makers here? Fallback ladder
 
 The makers below need subagents plus the `visual-tools` extension (the pi setup). In other environments (Hermes/Telegram, Claude Code, Codex, OpenCode…) pick the first rung that works:

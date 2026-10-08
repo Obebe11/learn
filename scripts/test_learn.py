@@ -214,6 +214,264 @@ class TestNudge(Base):
                          ["урок", "урока", "уроков", "уроков", "урок", "урока"])
 
 
+def lesson(lid, title, **kw):
+    return dict({"id": lid, "title": title, "objective": f"obj {lid}", "check": f"check {lid}"}, **kw)
+
+
+GRAPH_PLAN = {
+    "title": "AI career", "goal": "Build an AI script", "graph": True,
+    "pace": {"lessons_per_day": 2, "days": ["mon", "tue", "wed", "thu", "fri"]},
+    "start_date": "2026-10-05",
+    "units": [
+        {"id": "PY", "title": "Python", "lessons": [lesson("P1", "Functions"), lesson("P2", "Lists"), lesson("P3", "Files")]},
+        {"id": "AI", "title": "AI basics", "lessons": [lesson("A1", "What is a model"), lesson("A2", "Prompts")]},
+        {"id": "PR", "title": "Projects", "lessons": [
+            lesson("J1", "Chatbot script", kind="junction", requires=["P2", "A2"])]},
+    ],
+}
+
+
+class GraphBase(Base):
+    def setUp(self):
+        super().setUp()
+        self.gfile = os.path.join(self.tmp.name, "g.json")
+        Path(self.gfile).write_text(json.dumps(GRAPH_PLAN))
+        self.run_cmd("create", "ai", "--file", self.gfile)
+        self.run_cmd("archive", "py")  # keep a single active plan so commands need no --plan
+
+    def today_ids(self, **kw):
+        d = self.js("today", "--plan", "ai", **kw)["plans"][0]
+        return [l["id"] for l in d["lessons"]]
+
+
+class TestGraphValidation(GraphBase):
+    def bad(self, mutate, needle):
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        mutate(plan)
+        msg = self.run_cmd("create", "bad", "--stdin", stdin=json.dumps(plan), expect=1)
+        self.assertIn(needle, msg)
+
+    def test_unknown_requirement(self):
+        self.bad(lambda p: p["units"][2]["lessons"][0].update(requires=["P2", "ZZ"]), "unknown lesson 'ZZ'")
+
+    def test_cycle(self):
+        def m(p):
+            p["units"][0]["lessons"][0]["requires"] = ["P3"]
+        self.bad(m, "cycle")
+
+    def test_requires_needs_graph_flag(self):
+        self.bad(lambda p: p.pop("graph"), "no \"graph\": true")
+
+    def test_junction_warning(self):
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["units"][2]["lessons"][0]["requires"] = ["P1", "P2"]  # same track twice
+        Path(self.gfile).write_text(json.dumps(plan))
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = learn.main(["--home", self.home, "create", "ai", "--file", self.gfile, "--update"])
+        self.assertEqual(code, 0)
+        self.assertIn("junction J1 should combine lessons from 2+ different tracks", err.getvalue())
+
+
+class TestGraphScheduling(GraphBase):
+    def test_tracks_are_parallel_roots(self):
+        d = self.js("graph")
+        by = {n["id"]: n["status"] for n in d["nodes"]}
+        self.assertEqual((by["P1"], by["A1"], by["P2"], by["J1"]), ("available", "available", "locked", "locked"))
+
+    def test_day_interleaves_tracks(self):
+        self.assertEqual(sorted(self.today_ids()), ["A1", "P1"])  # one from each track, not P1+P2
+
+    def test_after_done_switches_track_and_unlocks(self):
+        self.run_cmd("done", "P1", "--score", "1")
+        self.assertEqual(self.today_ids(), ["A1"])  # quota 1 left -> the other track
+        self.run_cmd("done", "A1", "--score", "1")
+        self.assertEqual(self.today_ids(), [])  # quota used
+        nxt = self.today_ids(day="2026-10-06")
+        self.assertEqual(sorted(nxt), ["A2", "P2"])
+
+    def test_least_recently_studied_track_goes_first(self):
+        self.run_cmd("done", "P1", "--score", "1")
+        self.run_cmd("done", "A1", "--score", "1", day="2026-10-06")
+        # PY was studied on 10-05, AI on 10-06, so PY comes first again
+        order = [l["id"] for l in self.js("next", "--plan", "ai", "-n", "2", day="2026-10-07")]
+        self.assertEqual(order, ["P2", "A2"])
+
+    def test_junction_unlocks_only_with_both_skills_and_is_prioritised(self):
+        for lid in ("P1", "P2"):
+            self.run_cmd("done", lid, "--score", "1")
+        self.run_cmd("done", "A1", "--score", "1", day="2026-10-06")
+        status = {n["id"]: n["status"] for n in self.js("graph")["nodes"]}
+        self.assertEqual(status["J1"], "locked")  # A2 still missing
+        self.run_cmd("done", "A2", "--score", "1", day="2026-10-07")
+        status = {n["id"]: n["status"] for n in self.js("graph")["nodes"]}
+        self.assertEqual(status["J1"], "available")
+        self.assertEqual(self.today_ids(day="2026-10-08")[0], "J1")  # junction first
+        d = self.js("today", "--plan", "ai", day="2026-10-08")["plans"][0]["lessons"][0]
+        self.assertEqual(d["requires"], ["P2", "A2"])
+
+    def test_track_filter_and_unknown_track(self):
+        lessons = self.js("today", "--plan", "ai", "--track", "AI")["plans"][0]["lessons"]
+        self.assertEqual([l["id"] for l in lessons], ["A1", "A2"])  # whole quota from one branch when asked
+        self.run_cmd("today", "--track", "NOPE", expect=1)
+
+    def test_locked_lesson_needs_force(self):
+        self.assertIn("locked: finish P1", self.run_cmd("done", "P2", "--score", "1", expect=1))
+        self.run_cmd("done", "P2", "--score", "1", "--force")
+
+    def test_retry_blocks_dependents_and_comes_back_first(self):
+        self.run_cmd("done", "P1", "--score", "0.2")  # retry
+        status = {n["id"]: n["status"] for n in self.js("graph")["nodes"]}
+        self.assertEqual((status["P1"], status["P2"]), ("retry", "locked"))
+        self.assertEqual(self.today_ids(day="2026-10-06")[0], "P1")
+
+    def test_skip_unlocks_dependents(self):
+        self.run_cmd("skip", "P1")
+        status = {n["id"]: n["status"] for n in self.js("graph")["nodes"]}
+        self.assertEqual(status["P2"], "available")
+
+    def test_status_lists_tracks_and_nudge_names_them(self):
+        self.assertIn("PY Python:", self.run_cmd("status", "--plan", "ai"))
+        msg = self.run_cmd("nudge", "--language", "en")
+        self.assertIn("(Python)", msg)
+        self.assertIn("(AI basics)", msg)
+
+
+class TestSkillExamples(Base):
+    """The JSON examples in skills/study-plan/SKILL.md must stay valid."""
+
+    def test_all_plan_examples_validate(self):
+        import re
+        text = (Path(learn.__file__).parent.parent / "skills/study-plan/SKILL.md").read_text(encoding="utf-8")
+        blocks = re.findall(r"```json\n(.*?)```", text, re.S)
+        self.assertGreaterEqual(len(blocks), 2)  # linear + graph example
+        for i, raw in enumerate(blocks):
+            out = self.run_cmd("create", f"ex{i}", "--stdin", stdin=raw)
+            self.assertIn("created plan", out)
+
+
+class TestMigration(Base):
+    def test_linear_to_graph_warns_about_parallel_units(self):
+        two = json.loads(json.dumps(PLAN))
+        two["units"].append({"id": "U2", "title": "Second", "lessons": [lesson("M1", "Next topic")]})
+        Path(self.plan_file).write_text(json.dumps(two))
+        self.run_cmd("create", "py", "--file", self.plan_file, "--update")  # still linear: no warning
+        two["graph"] = True
+        Path(self.plan_file).write_text(json.dumps(two))
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = learn.main(["--home", self.home, "create", "py", "--file", self.plan_file, "--update"])
+        self.assertEqual(code, 0)
+        self.assertIn("now a graph", err.getvalue())
+        self.assertIn("Units U2", err.getvalue())
+        # keeping U2 sequential silences it
+        two["units"][1]["lessons"][0]["requires"] = ["L06"]
+        Path(self.plan_file).write_text(json.dumps(two))
+        self.run_cmd("create", "py", "--file", self.plan_file, "--update")
+
+
+class TestGraphViews(GraphBase):
+    def setUp(self):
+        super().setUp()
+        self.run_cmd("done", "P1", "--score", "1")
+
+    def test_text_map(self):
+        out = self.run_cmd("graph")
+        self.assertIn("PY · Python", out)
+        self.assertIn("✅P1 → ▶P2", out)
+        self.assertIn("⭐🔒 J1", out)
+        self.assertIn("needs P2 (Lists) + A2 (Prompts)", out)
+        self.assertIn("Ready now:", out)
+
+    def test_md_and_units_level(self):
+        md = self.run_cmd("graph", "--format", "md")
+        self.assertIn("| Python |", md)
+        self.assertIn("**⭐ Junctions**", md)
+        units = self.js("graph", "--level", "units")
+        self.assertIn(["PY", "PR"], units["edges"])
+        self.assertIn(["AI", "PR"], units["edges"])
+        self.assertIn("PY ──► PR", self.run_cmd("graph", "--level", "units"))
+
+    def test_mermaid_and_plan_md(self):
+        mm = self.run_cmd("graph", "--format", "mermaid")
+        self.assertTrue(mm.startswith("graph TD"))
+        self.assertIn("P1 --> P2", mm)
+        self.assertIn('J1{{"J1 Chatbot script"}}:::locked', mm)
+        self.assertIn("A2 --> J1", mm)
+        md = (Path(self.home) / "plans/ai/PLAN.md").read_text()
+        self.assertIn("```mermaid", md)
+        self.assertIn("⭐ **J1** Chatbot script _junction_ 🔒 — needs P2, A2", md)
+
+    def test_svg_is_valid_xml_and_contains_nodes(self):
+        import xml.etree.ElementTree as ET
+        out = os.path.join(self.tmp.name, "g.svg")
+        self.run_cmd("graph", "--format", "svg", "-o", out)
+        root = ET.parse(out).getroot()
+        text = "".join(root.itertext())
+        for needle in ("P1", "A2", "J1", "Python", "AI career"):
+            self.assertIn(needle, text)
+
+    def test_png_without_converter_explains(self):
+        import shutil
+        real = shutil.which
+        shutil.which = lambda *_a, **_k: None
+        try:
+            msg = self.run_cmd("graph", "--format", "png", "-o", os.path.join(self.tmp.name, "g.png"), expect=1)
+        finally:
+            shutil.which = real
+        self.assertIn("no working SVG", msg)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp.name, "g.svg")))
+
+    def test_long_track_collapses(self):
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["units"][0]["lessons"] = [lesson(f"P{i}", f"L{i}") for i in range(1, 21)]
+        plan["units"][2]["lessons"][0]["requires"] = ["P5", "A2"]
+        Path(self.gfile).write_text(json.dumps(plan))
+        self.run_cmd("create", "ai", "--file", self.gfile, "--update")
+        line = [l for l in self.run_cmd("graph").splitlines() if "P1" in l and "…" in l][0]
+        self.assertIn("… +", line)
+        self.assertLess(len(line), 80)
+
+
+class TestStartDate(Base):
+    def setUp(self):
+        super().setUp()
+        late = dict(PLAN, start_date="2026-10-12")  # next Monday
+        Path(self.plan_file).write_text(json.dumps(late))
+        self.run_cmd("create", "py", "--file", self.plan_file, "--update")
+
+    def test_today_before_start_says_when_it_starts(self):
+        out = self.run_cmd("today", day="2026-10-08")
+        self.assertIn("starts 2026-10-12", out)
+        self.assertNotIn("rest day", out)
+        self.assertEqual(self.js("today", day="2026-10-08")["plans"][0]["state"], "not_started")
+
+    def test_learn_start_begins_today(self):
+        self.run_cmd("start", day="2026-10-08")
+        d = self.js("today", day="2026-10-08")["plans"][0]
+        self.assertEqual((d["state"], d["quota"]), ("active", 2))
+
+    def test_early_lesson_re_anchors_plan(self):
+        self.run_cmd("done", "L01", "--score", "1", day="2026-10-08")
+        d = self.js("today", day="2026-10-09")["plans"][0]
+        self.assertEqual(d["state"], "active")
+        self.assertEqual(d["starts_on"], "2026-10-08")
+        # one lesson done, 2/day expected for the Thursday that passed: behind by 1, not "ahead"
+        self.assertEqual((d["behind"],), (1,))
+
+    def test_validate_warns_about_events_before_start(self):
+        self.run_cmd("done", "L01", "--score", "1", day="2026-10-08")
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            learn.main(["--home", self.home, "validate", "--plan", "py"])
+        self.assertIn("before start_date", err.getvalue())
+        self.assertIn("learn start --date 2026-10-08", err.getvalue())
+
+    def test_nudge_works_for_early_study(self):
+        self.run_cmd("done", "L01", "--score", "1", day="2026-10-08")
+        self.assertIn("Сегодня", self.run_cmd("nudge", day="2026-10-09"))
+
+
 class TestSync(Base):
     def git(self, *a, cwd=None):
         subprocess.run(["git", "-C", cwd or self.home, *a], check=True, capture_output=True)

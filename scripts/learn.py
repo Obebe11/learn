@@ -24,10 +24,13 @@ import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # find learn_graph.py next to the real file (symlink-safe)
+import learn_graph as G  # noqa: E402
+
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 # Leitner boxes 1..7: days until the next review after a successful recall.
 INTERVALS = [1, 3, 7, 14, 30, 60, 120]
-KINDS = {"lesson", "review", "milestone"}
+KINDS = {"lesson", "review", "milestone", "junction"}
 CHAT_FORMATS = ("plain", "rich")  # rich = Telegram rich messages (tables, LaTeX, task lists, details)
 CONFIG_KEYS = {"language": None, "timezone": None, "chat_format": CHAT_FORMATS}
 DEFAULT_PACE = {"lessons_per_day": 2, "days": ["mon", "tue", "wed", "thu", "fri", "sat"],
@@ -201,6 +204,13 @@ def counts(plan, prog):
     return {"done": done, "skipped": skipped, "total": len(ls), "remaining": len(ls) - done - skipped}
 
 
+def effective_start(plan, prog):
+    """start_date, or the first lesson actually done if that came earlier (you may study ahead of the plan's start)."""
+    start = parse_date(plan["start_date"])
+    first = min((e["date"] for e in prog["events"] if e["type"] == "lesson"), default=None)
+    return min(start, parse_date(first)) if first else start
+
+
 def is_scheduled(plan, d):
     return DAYS[d.weekday()] in plan["pace"]["days"]
 
@@ -218,7 +228,7 @@ def pace_report(plan, prog, today):
     """
     pace = plan["pace"]
     lpd = pace["lessons_per_day"]
-    start = parse_date(plan["start_date"])
+    start = effective_start(plan, prog)
     expected = 0
     d = start
     while d < today:
@@ -308,7 +318,7 @@ def last_activity(store):
 # validation
 # ----------------------------------------------------------------------------
 
-def normalize_plan(plan, today):
+def normalize_plan(plan, today, warnings=None):
     """Validate and fill defaults. Raises LearnError listing every problem."""
     errs = []
     if not isinstance(plan, dict):
@@ -378,8 +388,32 @@ def normalize_plan(plan, today):
             for oid in l.get("outcomes", []):
                 if oid not in outcome_ids:
                     errs.append(f"lesson {lid}: unknown outcome {oid}")
+    # --- graph ---
+    ids = {l["id"] for u in units for l in u.get("lessons", []) if l.get("id")}
+    has_requires = any("requires" in l for u in units for l in u.get("lessons", []))
+    if has_requires and not plan.get("graph"):
+        errs.append("lessons use 'requires' but the plan has no \"graph\": true")
+    for u in units:
+        for l in u.get("lessons", []):
+            if "requires" in l:
+                if not isinstance(l["requires"], list):
+                    errs.append(f"lesson {l.get('id')}: 'requires' must be a list of lesson ids")
+                    continue
+                for r in l["requires"]:
+                    if r not in ids:
+                        errs.append(f"lesson {l.get('id')}: requires unknown lesson '{r}'")
+                    elif r == l.get("id"):
+                        errs.append(f"lesson {r} requires itself")
+            if l.get("kind") == "junction" and not plan.get("graph"):
+                errs.append(f"lesson {l.get('id')}: kind 'junction' needs \"graph\": true")
+    if plan.get("graph") and not errs:
+        cyc = G.find_cycle(G.requires_map(plan))
+        if cyc:
+            errs.append("prerequisite cycle: " + " → ".join(cyc))
     if errs:
         raise LearnError("invalid plan:\n  - " + "\n  - ".join(errs))
+    if warnings is not None:
+        warnings.extend(G.graph_warnings(plan))
     return plan
 
 
@@ -417,6 +451,15 @@ def render_plan_md(slug, plan, prog, today):
         out += ["## Outcomes", ""]
         out += [f"- **{o['id']}** {o['text']}" for o in plan["outcomes"]]
         out.append("")
+    gm = G.graph_mode(plan)
+    reqs = G.requires_map(plan)
+    sat = G.satisfied_ids(plan, prog)
+    if gm:
+        level = "lessons" if c["total"] <= 50 else "units"
+        model = G.build_model(plan, prog, level)
+        out += ["## Map", "", "```mermaid", G.render_mermaid(plan["title"], plan, prog, model), "```", "",
+                "_Tracks are parallel branches; ⭐ junctions need several skills at once. "
+                "`▶` = ready now, `🔒` = locked._", ""]
     out += ["## Lessons", "", "_`[x]` done · `[ ]` pending · `[!]` retry · `[-]` skipped_", ""]
     for u in plan["units"]:
         ud = sum(1 for l in u["lessons"] if lesson_state(prog, l["id"]) == "done")
@@ -430,7 +473,14 @@ def render_plan_md(slug, plan, prog, today):
             elif st == "retry":
                 tail = f" — retry (last {round(rec.get('score', 0) * 100)}%)"
             kind = "" if l["kind"] == "lesson" else f" _{l['kind']}_"
-            out.append(f"- [{MARK[st]}] **{l['id']}** {l['title']}{kind}{tail}")
+            mark = ""
+            if gm and st in ("pending", "retry"):
+                mark = " 🔒" if st == "pending" and not all(r in sat for r in reqs[l["id"]]) else " ▶"
+            needs = ""
+            if gm and ("requires" in l) and reqs[l["id"]]:
+                needs = " — needs " + ", ".join(reqs[l["id"]])
+            star = "⭐ " if l["kind"] == "junction" else ""
+            out.append(f"- [{MARK[st]}] {star}**{l['id']}** {l['title']}{kind}{mark}{needs}{tail}")
             out.append(f"  - {l['objective']}")
         ms = u.get("milestone")
         if ms:
@@ -549,7 +599,8 @@ def cmd_create(args):
         plan = json.loads(raw)
     except json.JSONDecodeError as e:
         raise LearnError(f"plan is not valid JSON: {e}")
-    plan = normalize_plan(plan, st.today)
+    warns = []
+    plan = normalize_plan(plan, st.today, warns)
     exists = (st.plans_dir / args.slug / "plan.json").exists()
     if exists and not args.update:
         raise LearnError(f"plan '{args.slug}' exists — use --update to replace the plan and keep progress")
@@ -559,6 +610,11 @@ def cmd_create(args):
     orphans = sorted(set(prog["lessons"]) - ids)
     if orphans:
         print(f"warning: progress exists for lessons no longer in the plan: {', '.join(orphans)}", file=sys.stderr)
+    warns += progress_warnings(plan, prog)
+    if exists:
+        warns += G.migration_warnings(st.load(args.slug)[0], plan)
+    for w in warns:
+        print(f"warning: {w}", file=sys.stderr)
     st.save(args.slug, plan, prog)
     c = counts(plan, prog)
     print(f"{'updated' if exists else 'created'} plan '{args.slug}': {c['total']} lessons "
@@ -570,11 +626,37 @@ def cmd_create(args):
         print(f"⚠ projected finish is after the deadline ({plan['deadline']}): cut scope or add study days — don't just raise the pace", file=sys.stderr)
 
 
+def progress_warnings(plan, prog):
+    out = []
+    early = sorted({e["date"] for e in prog["events"] if e["date"] < plan["start_date"]})
+    if early:
+        out.append(f"progress has events before start_date {plan['start_date']} (from {early[0]}); "
+                   f"the plan is treated as started on {early[0]} — run `learn start --date {early[0]}` to make it official")
+    return out
+
+
 def cmd_validate(args):
     st = Store(args)
     slug, plan, prog = st.select_one(args.plan)
-    normalize_plan(plan, st.today)
+    warns = []
+    normalize_plan(plan, st.today, warns)
+    for w in warns + progress_warnings(plan, prog):
+        print(f"warning: {w}", file=sys.stderr)
     print(f"plan '{slug}' is valid")
+
+
+def cmd_start(args):
+    st = Store(args)
+    slug, plan, prog = st.select_one(args.plan)
+    day = args.date or iso(st.today)
+    try:
+        parse_date(day)
+    except ValueError:
+        raise LearnError("--date must be YYYY-MM-DD")
+    plan["start_date"] = day
+    st.save(slug, plan, prog)
+    pr = pace_report(plan, prog, st.today)
+    print(f"plan '{slug}' starts {day}" + (f" · projected finish {pr['projected_finish']}" if pr["projected_finish"] else ""))
 
 
 def cmd_render(args):
@@ -624,6 +706,11 @@ def cmd_status(args):
                   f"  reviews due: {s['reviews_due']} of {s['cards']} cards"]
         if nxt:
             lines.append(f"  next: {nxt['id']} {nxt['title']}")
+        if G.graph_mode(plan):
+            s["tracks"] = G.track_summary(plan, prog)
+            for t in s["tracks"]:
+                ready = ", ".join(t["ready"][:3]) or "—"
+                lines.append(f"  {t['id']} {t['title']}: {bar(t['done'], t['total'], 8)} {t['done']}/{t['total']} · ready: {ready}")
     emit(args, data, "\n".join(lines))
 
 
@@ -640,35 +727,65 @@ def cmd_today(args):
     for slug, plan, prog in plans:
         lpd = plan["pace"]["lessons_per_day"]
         done_today = len(lesson_events_on(prog, t))
-        scheduled = is_scheduled(plan, t) and t >= parse_date(plan["start_date"])
+        start = effective_start(plan, prog)
+        started = t >= start
+        scheduled = is_scheduled(plan, t) and started
         quota = max(0, lpd - done_today) if scheduled else 0
         pr = pace_report(plan, prog, t)
-        todo = pending_lessons(plan, prog)[:quota]
+        try:
+            todo = G.day_plan(plan, prog, quota, iso(t), args.track) if quota else []
+        except KeyError as e:
+            raise LearnError(e.args[0])
         all_due += due_cards(slug, prog, t)
-        data["plans"].append({"slug": slug, "title": plan["title"], "scheduled_today": scheduled,
+        gm = G.graph_mode(plan)
+        units = G.unit_of(plan)
+        utitle = {u["id"]: u["title"] for u in plan["units"]}
+        reqs = G.requires_map(plan)
+        state = "active" if scheduled else ("not_started" if not started else "rest")
+        data["plans"].append({"slug": slug, "title": plan["title"], "scheduled_today": scheduled, "state": state,
+                              "starts_on": iso(start), "graph": gm,
                               "quota": quota, "done_today": done_today, "behind": pr["behind"],
                               "projected_finish": pr["projected_finish"],
                               "lessons": [dict(l, status=lesson_state(prog, l["id"]),
-                                               attempts=prog["lessons"].get(l["id"], {}).get("attempts", 0))
+                                               attempts=prog["lessons"].get(l["id"], {}).get("attempts", 0),
+                                               track=units[l["id"]], track_title=utitle[units[l["id"]]],
+                                               requires=reqs[l["id"]] if gm else [])
                                           for l in todo],
                               "pass_score": plan["pace"]["pass_score"]})
         head = f"== {slug} — {plan['title']}: "
-        head += (f"{done_today}/{lpd} done today" if scheduled else "rest day") + " =="
+        if scheduled:
+            head += f"{done_today}/{lpd} done today"
+        elif not started:
+            head += f"starts {iso(start)} (run `learn start --plan {slug}` to begin today)"
+        else:
+            head += "rest day"
+        head += " =="
         lines += ["", head]
+        if gm and scheduled:
+            lines.append("  🗺 graph plan: lessons come from different tracks on purpose (interleaving). "
+                         "After each `learn done`, re-run `learn today` — new lessons may unlock.")
         if pr["behind"]:
             lines.append(f"  behind by {pr['behind']} lesson(s): do NOT double up — keep the normal quota; the finish date moves"
                          + (f" (≈ {pr['projected_finish']})" if pr["projected_finish"] else ""))
         for l in todo:
             retry = " (RETRY — re-teach the gaps)" if lesson_state(prog, l["id"]) == "retry" else ""
-            lines += [f"  ▶ {l['id']} · {l['title']} · {l['minutes']}m [{l['kind']}]{retry}",
+            track = f" · track {units[l['id']]} {utitle[units[l['id']]]}" if gm else ""
+            star = "⭐ " if l["kind"] == "junction" else ""
+            lines += [f"  ▶ {star}{l['id']} · {l['title']} · {l['minutes']}m [{l['kind']}]{track}{retry}",
                       f"      objective: {l['objective']}",
                       f"      check: {l['check']}"]
+            if gm and l["kind"] == "junction":
+                lines.append("      ⭐ junction: needs several skills at once — builds on " + ", ".join(reqs[l["id"]])
+                             + " (recall those first)")
             if l.get("nodes"):
                 lines.append("      key ideas: " + "; ".join(l["nodes"]))
         if scheduled and not todo and counts(plan, prog)["remaining"] == 0:
             lines.append("  plan complete 🎉")
-        elif scheduled and not todo:
+        elif scheduled and not todo and quota == 0:
             lines.append("  quota for today is done ✔")
+        elif scheduled and not todo:
+            lines.append("  nothing unlocked yet in this track filter — finish a prerequisite or pick another track"
+                         if args.track else "  nothing unlocked right now — finish the lessons in progress (retry) first")
     all_due.sort(key=lambda c: (c["due"], c["plan"], c["id"]))
     shown = all_due[: args.max_reviews]
     data["reviews"] = shown
@@ -683,10 +800,40 @@ def cmd_today(args):
     emit(args, data, "\n".join(lines))
 
 
+def cmd_graph(args):
+    st = Store(args)
+    slug, plan, prog = st.select_one(args.plan)
+    model = G.build_model(plan, prog, args.level)
+    c = counts(plan, prog)
+    title = f"{plan['title']}"
+    if args.json:
+        print(json.dumps(model, ensure_ascii=False, indent=2))
+        return
+    if args.format in ("svg", "png"):
+        out = Path(args.out) if args.out else st.plans_dir / slug / f"graph.{args.format}"
+        svg = G.render_svg(title, plan, prog, model, c["done"], c["total"])
+        if args.format == "svg":
+            write_text(out, svg)
+        else:
+            svg_path = out.with_suffix(".svg")
+            write_text(svg_path, svg)
+            try:
+                G.svg_to_png(svg_path, out)
+            except RuntimeError as e:
+                raise LearnError(f"{e}\n(SVG saved at {svg_path})")
+        print(out)
+        return
+    render = {"text": G.render_text, "md": G.render_md, "mermaid": G.render_mermaid}[args.format]
+    print(render(title, plan, prog, model, c["done"], c["total"]))
+
+
 def cmd_next(args):
     st = Store(args)
     slug, plan, prog = st.select_one(args.plan)
-    todo = pending_lessons(plan, prog)[: args.n]
+    try:
+        todo = G.day_plan(plan, prog, args.n, iso(st.today), args.track)
+    except KeyError as e:
+        raise LearnError(e.args[0])
     data = [dict(l, status=lesson_state(prog, l["id"])) for l in todo]
     text = "\n".join(f"{l['id']} · {l['title']} · {l['minutes']}m\n   objective: {l['objective']}\n   check: {l['check']}"
                      for l in todo) or "plan complete 🎉"
@@ -706,6 +853,11 @@ def cmd_done(args):
     lesson = find_lesson(plan, args.lesson)
     if args.score is not None and not 0 <= args.score <= 1:
         raise LearnError("--score must be between 0 and 1")
+    if G.graph_mode(plan) and not args.force:
+        missing = G.missing_requirements(plan, prog, lesson["id"])
+        if missing:
+            raise LearnError(f"{lesson['id']} is locked: finish {', '.join(missing)} first "
+                             f"(or pass --force to record it anyway)")
     rec = prog["lessons"].setdefault(lesson["id"], {})
     rec["attempts"] = rec.get("attempts", 0) + 1
     passed = args.accept or args.score is None or args.score >= plan["pace"]["pass_score"]
@@ -869,10 +1021,13 @@ def cmd_nudge(args):
     t = st.today
     todo, due_total, behind = [], 0, 0
     for slug, plan, prog in st.active():
-        scheduled = is_scheduled(plan, t) and t >= parse_date(plan["start_date"])
+        scheduled = is_scheduled(plan, t) and t >= effective_start(plan, prog)
         if scheduled:
             quota = max(0, plan["pace"]["lessons_per_day"] - len(lesson_events_on(prog, t)))
-            todo += [(slug, l) for l in pending_lessons(plan, prog)[:quota]]
+            utitle = {u["id"]: u["title"] for u in plan["units"]}
+            units = G.unit_of(plan)
+            for l in G.day_plan(plan, prog, quota, iso(t)):
+                todo.append((slug, dict(l, tag=utitle[units[l["id"]]] if G.graph_mode(plan) else "")))
         due_total += len(due_cards(slug, prog, t))
         behind = max(behind, pace_report(plan, prog, t)["behind"])
     if not todo and not due_total:
@@ -882,7 +1037,10 @@ def cmd_nudge(args):
     away = (t - last).days if last else 0
     md = args.markdown
     b = (lambda x: f"**{x}**") if md else (lambda x: x)
-    item = (lambda l: f"- [ ] {l['id']} · {l['title']}") if md else (lambda l: f"• {l['id']} · {l['title']}")
+    def item(l):
+        tag = f" ({l['tag']})" if l.get("tag") else ""
+        star = "⭐ " if l.get("kind") == "junction" else ""
+        return f"- [ ] {star}{l['id']} · {l['title']}{tag}" if md else f"• {star}{l['id']} · {l['title']}{tag}"
     if ru:
         head = "📚 С возвращением! Ничего не потеряно — начнём с лёгкого." if away >= 4 else "📚 Время учиться!"
         parts = []
@@ -1002,15 +1160,27 @@ def build_parser():
 
     p = add("today", cmd_today, "today's lessons + warm-up reviews (start every session here)")
     p.add_argument("--max-reviews", type=int, default=6, help="cap warm-up reviews (default 6)")
+    p.add_argument("--track", help="graph plans: only lessons from this track (unit id) — e.g. 'today I want AI'")
 
     p = add("next", cmd_next, "upcoming lessons regardless of daily quota")
     p.add_argument("-n", type=int, default=3)
+    p.add_argument("--track", help="graph plans: only this track (unit id)")
+
+    p = add("graph", cmd_graph, "the knowledge map: tracks, junctions, what is ready/locked")
+    p.add_argument("--format", choices=["text", "md", "mermaid", "svg", "png"], default="text",
+                   help="text (chat code block), md (rich Markdown table), mermaid (Obsidian), svg/png (image file)")
+    p.add_argument("--level", choices=["lessons", "units"], default="lessons")
+    p.add_argument("-o", "--out", help="output file for svg/png (default: plans/<slug>/graph.<ext>)")
+
+    p = add("start", cmd_start, "set the plan's start date (default: today)")
+    p.add_argument("--date", help="YYYY-MM-DD")
 
     p = add("done", cmd_done, "record a finished lesson")
     p.add_argument("lesson")
     p.add_argument("--score", type=float, help="0..1 from the end-of-lesson check")
     p.add_argument("--note", help="one line: what was hard / what to revisit")
     p.add_argument("--accept", action="store_true", help="mark done even if score is below the pass bar")
+    p.add_argument("--force", action="store_true", help="graph plans: record a lesson whose prerequisites are not done")
 
     p = add("skip", cmd_skip, "drop a lesson from the plan's remaining work")
     p.add_argument("lesson")
