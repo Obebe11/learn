@@ -19,7 +19,7 @@ This skill runs in many agents (pi, Hermes via Telegram, Claude Code, Codex, Ope
 | `ask_user_question` (no-right-answer fork) | use it | ask in plain text, offer numbered choices |
 | `researcher` subagent | use it for every doubt | a web-search/fetch tool yourself; with none, **say plainly that a claim is unverified** and keep it out of the foundations |
 | `visualize` makers | per that skill | per that skill's fallback ladder (ASCII sketch in a code block) |
-| LaTeX (`$…$`) | when the viewer renders it (Obsidian, Claude app, most terminals' markdown viewers) | messaging apps (Telegram, WhatsApp) don't render LaTeX: write plain text/Unicode — `x² + 3x = 0`, `√2`, `a/b` — and keep code in backticks |
+| LaTeX (`$…$`) | when the viewer renders it (Obsidian, Claude app, markdown viewers, **Telegram with rich messages on** — `chat_format rich`) | plain chat paths (Telegram without rich, WhatsApp) don't render LaTeX: write plain text/Unicode — `x² + 3x = 0`, `√2`, `a/b` — and keep code in backticks |
 
 Everything below says `quiz` / `ask_user_question` / `researcher`; read that as "that tool, or its fallback".
 

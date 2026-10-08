@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Install the learning system for Hermes Agent (run on the machine where `hermes gateway` runs).
 #
-#   ./integrations/hermes/install.sh [--language ru] [--timezone Europe/Moscow] [--home ~/learning]
+#   ./integrations/hermes/install.sh [--language ru] [--timezone Europe/Moscow] [--home ~/learning] [--rich]
+#
+#   --rich  tell the skills your Telegram bot uses rich messages (LaTeX, tables, task lists, <details>).
+#           You must ALSO enable it in Hermes (see the note printed at the end).
 #
 # Does four things, all idempotent (safe to re-run after `git pull`):
 #   1. links scripts/learn.py as `learn` into ~/.local/bin
@@ -16,13 +19,15 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 LEARN_HOME="${LEARN_HOME:-$HOME/learning}"
 LANGUAGE="ru"
 TZ_NAME=""
+RICH=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --language) LANGUAGE="$2"; shift 2 ;;
     --timezone) TZ_NAME="$2"; shift 2 ;;
     --home)     LEARN_HOME="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,12p' "$0"; exit 0 ;;
+    --rich)     RICH=1; shift ;;
+    -h|--help)  sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -39,6 +44,7 @@ case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "  note: add $HOME/.local/b
 # 2. data dir
 init_args=(--home "$LEARN_HOME" --language "$LANGUAGE")
 [ -n "$TZ_NAME" ] && init_args+=(--timezone "$TZ_NAME")
+[ "$RICH" = 1 ] && init_args+=(--chat-format rich)
 python3 "$REPO/scripts/learn.py" init "${init_args[@]}"
 
 # 3. skills
@@ -73,3 +79,18 @@ and later each day:               /daily-lesson
 
 Guide: $REPO/docs/hermes-telegram.md
 NEXT
+if [ "$RICH" = 1 ]; then cat <<RICHNOTE
+
+Rich messages: add to $HERMES_HOME/config.yaml (key per Hermes' Telegram docs; check your version), then restart the gateway:
+  gateway:
+    platforms:
+      telegram:
+        extra:
+          rich_messages: true
+Without this the bot would send LaTeX/tables as raw symbols. To go back:  learn config chat_format plain
+RICHNOTE
+else cat <<RICHNOTE
+
+Optional: Telegram rich messages (LaTeX, tables, task lists, hints) — enable in Hermes, then run:  learn config chat_format rich
+RICHNOTE
+fi

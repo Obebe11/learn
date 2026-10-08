@@ -135,6 +135,26 @@ class TestDaily(Base):
         self.assertEqual(self.run_cmd("nudge"), "")
 
 
+class TestConfig(Base):
+    def test_chat_format_roundtrip_and_today(self):
+        self.assertEqual(self.js("today")["chat_format"], "plain")
+        self.run_cmd("config", "chat_format", "rich")
+        self.assertEqual(self.run_cmd("config", "chat_format").strip(), "rich")
+        d = self.js("today")
+        self.assertEqual((d["chat_format"], d["language"]), ("rich", "ru"))
+        self.assertIn("chat_format rich", self.run_cmd("today"))
+
+    def test_rejects_bad_values(self):
+        self.run_cmd("config", "chat_format", "fancy", expect=1)
+        self.run_cmd("config", "colour", "red", expect=1)
+
+    def test_init_flag(self):
+        home = os.path.join(self.tmp.name, "other")
+        code = learn.main(["--home", home, "init", "--chat-format", "rich"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.load(open(os.path.join(home, "config.json")))["chat_format"], "rich")
+
+
 class TestReviews(Base):
     def test_leitner_cycle(self):
         self.run_cmd("card", "add", "--lesson", "L01", "--q", "What is a function?", "--a", "Reusable block")
@@ -182,6 +202,11 @@ class TestNudge(Base):
 
     def test_english(self):
         self.assertIn("Time to learn", self.run_cmd("nudge", "--language", "en"))
+
+    def test_markdown_nudge(self):
+        md = self.run_cmd("nudge", "--markdown")
+        self.assertIn("**📚 Время учиться!**", md)
+        self.assertIn("- [ ] L01 · Lesson 1", md)
 
     def test_plurals(self):
         f = ("урок", "урока", "уроков")

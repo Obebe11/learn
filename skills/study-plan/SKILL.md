@@ -23,7 +23,7 @@ At the start: `learn sync` (ignore "not a git repo"), `learn plans`, and read `<
 
 ## Chat-mode etiquette (phone / Telegram / WhatsApp)
 
-If the learner is on a messaging gateway: one question per message, short messages (≈ under 1,000 characters), no tables, no LaTeX or Mermaid (they usually don't render — use plain text/Unicode), offer numbered choices instead of open forms. Never dump the whole JSON plan into chat; show the outline.
+If the learner is on a messaging gateway: one question per message, short messages (≈ under 1,000 characters), no Mermaid ever. Check `chat_format` (`learn config chat_format`): `plain` → no tables or LaTeX (they show as raw symbols; use plain text/Unicode); `rich` (Telegram rich messages) → tables, LaTeX and task lists are fine — e.g. present the plan outline as a table of units and a task list for the first week (syntax: `skills/daily-lesson/references/telegram-rich.md`). Offer numbered choices instead of open forms. Never dump the whole JSON plan into chat; show the outline.
 
 ## Process
 
