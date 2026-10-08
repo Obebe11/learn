@@ -144,8 +144,9 @@ def day_plan(plan, prog, quota, today_iso, track=None):
 
     Linear plans: the next `quota` pending lessons, in order (as before).
     Graph plans: pick from the *available* frontier, round-robin across
-    tracks (interleaving) — retries first, then junctions (the payoff of
-    several skills), then the track with the fewest picks today, then the
+    tracks (interleaving) — retries first, then the day's first junction (the
+    payoff of several skills; at most one gets priority per day, so projects
+    don't pile up), then the track with the fewest picks today, then the
     track studied longest ago. A pick virtually unlocks its successors, so a
     quota larger than the number of tracks continues down a branch.
     """
@@ -164,9 +165,12 @@ def day_plan(plan, prog, quota, today_iso, track=None):
         if rec.get("status") == "done" and lid in units:
             last[units[lid]] = max(last[units[lid]], rec.get("date", ""))
     today_count = defaultdict(int)
+    kinds = {l["id"]: l.get("kind", "lesson") for l in lessons_of(plan)}
+    junctions_today = 0
     for e in prog["events"]:
         if e["type"] == "lesson" and e["date"] == today_iso and e["id"] in units:
             today_count[units[e["id"]]] += 1
+            junctions_today += kinds[e["id"]] == "junction"
 
     sat = satisfied_ids(plan, prog)
     chosen = []
@@ -176,13 +180,14 @@ def day_plan(plan, prog, quota, today_iso, track=None):
         if not cands:
             break
         pick = min(cands, key=lambda l: (lesson_status(prog, l["id"]) != "retry",
-                                         l.get("kind") != "junction",
+                                         not (l.get("kind") == "junction" and junctions_today == 0),
                                          today_count[units[l["id"]]],
                                          last[units[l["id"]]],
                                          order[l["id"]]))
         chosen.append(pick)
         sat.add(pick["id"])
         today_count[units[pick["id"]]] += 1
+        junctions_today += pick.get("kind") == "junction"
     return chosen
 
 
