@@ -38,6 +38,9 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import oauth_min  # minimal OAuth for ChatGPT custom connectors
+
 HERE = Path(__file__).resolve().parent  # resolve(): works when started through a symlink
 LEARN_PY = HERE / "learn.py"
 SKILLS_DIR = HERE.parent / "skills"
@@ -675,6 +678,8 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization", "")
         if auth[:7].lower() == "bearer ":
             supplied = auth[7:].strip()
+        if supplied and oauth_min.STORE.valid_access(supplied):
+            return True
         return supplied is not None and hmac.compare_digest(supplied.encode("utf-8"), self.server.token.encode("utf-8"))
 
     def _body(self):
@@ -718,11 +723,15 @@ class Handler(BaseHTTPRequestHandler):
         method = self.command
         if route == "/health" and method == "GET":
             return self._json(200, {"ok": True, "name": "learn", "version": VERSION})
+        if oauth_min.handle(self, route, method, query):
+            return
         origin = self.headers.get("Origin")  # browsers only; MCP clients and curl send none
         if origin and "*" not in self.server.allowed_origins and origin not in self.server.allowed_origins:
             return self._json(403, {"ok": False, "error": "origin not allowed"})
         if not self._authorized(url_token):
-            return self._json(401, {"ok": False, "error": "missing or wrong token"}, {"WWW-Authenticate": "Bearer"})
+            return self._json(401, {"ok": False, "error": "missing or wrong token"}, {
+                "WWW-Authenticate": 'Bearer resource_metadata="' + oauth_min.public_base().replace("/learn", "")
+                + '/.well-known/oauth-protected-resource/learn"'})
         core = self.server.core
 
         if route == "/mcp":

@@ -1436,6 +1436,18 @@ class TestStartDate(Base):
         # one lesson done, 2/day expected for the Thursday that passed: behind by 1, not "ahead"
         self.assertEqual((d["behind"],), (1,))
 
+    def test_validate_warns_about_python_check_outside_py_track(self):
+        self.run_cmd("done", "L01", "--score", "1", day="2026-10-08")
+        plan_path = Path(self.home) / "plans" / "py" / "plan.json"
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan["units"][0]["id"] = "MATH"
+        plan["units"][0]["lessons"][0]["check"] = "3 задачи руками + те же в Python-списках"
+        plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            learn.main(["--home", self.home, "validate", "--plan", "py"])
+        self.assertIn("requires Python", err.getvalue())
+
     def test_validate_warns_about_events_before_start(self):
         self.run_cmd("done", "L01", "--score", "1", day="2026-10-08")
         err = io.StringIO()

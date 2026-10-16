@@ -502,7 +502,8 @@ class TestAuth(Base):
         self.assertEqual(self.http("GET", "/health", auth=False)[0], 200)
         for method, path in (("GET", "/api/tools"), ("POST", "/mcp"), ("POST", "/api/tools/learn_status")):
             status, headers, _ = self.http(method, path, "{}", auth=False)
-            self.assertEqual((status, headers["WWW-Authenticate"]), (401, "Bearer"), path)
+            self.assertEqual(status, 401, path)
+            self.assertTrue(headers["WWW-Authenticate"].startswith("Bearer"), path)
         status, _, _ = self.http("GET", "/api/tools", headers={"Authorization": "Bearer " + "x" * 40})
         self.assertEqual(status, 401)
         status, _, _ = self.http("GET", "/api/tools", headers={"Authorization": TOKEN})  # scheme missing
@@ -579,3 +580,61 @@ class TestStdio(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
+
+
+class TestOAuth(unittest.TestCase):
+    """Minimal OAuth for ChatGPT: PKCE, one-time codes, login by the server token."""
+
+    @classmethod
+    def setUpClass(cls):
+        import hashlib, base64, importlib, tempfile
+        cls.tmp = tempfile.mkdtemp()
+        import os as _os
+        _os.environ["LEARN_OAUTH_STATE"] = _os.path.join(cls.tmp, "oauth.json")
+        sys_path = _os.path.dirname(_os.path.abspath(__file__))
+        import sys as _sys
+        if sys_path not in _sys.path:
+            _sys.path.insert(0, sys_path)
+        import oauth_min
+        importlib.reload(oauth_min)
+        cls.oauth = oauth_min
+        cls.verifier = "v" * 60
+        cls.challenge = base64.urlsafe_b64encode(hashlib.sha256(cls.verifier.encode()).digest()).decode().rstrip("=")
+
+    def test_pkce_s256(self):
+        self.assertTrue(self.oauth._pkce_ok(self.verifier, self.challenge))
+        self.assertFalse(self.oauth._pkce_ok("x" * 60, self.challenge))
+
+    def test_params_must_match_client_and_redirect(self):
+        good = {"response_type": "code", "client_id": self.oauth.CLIENT_ID,
+                "redirect_uri": "https://chatgpt.com/connector/oauth/haBfcbUSd2V",
+                "code_challenge_method": "S256", "code_challenge": self.challenge}
+        self.assertIsNone(self.oauth._params_ok(good))
+        self.assertIsNotNone(self.oauth._params_ok(dict(good, redirect_uri="https://evil.example/cb")))
+        self.assertIsNotNone(self.oauth._params_ok(dict(good, client_id="other")))
+        self.assertIsNotNone(self.oauth._params_ok(dict(good, code_challenge_method="plain")))
+
+    def test_issued_access_token_is_valid_and_expires_check(self):
+        access, refresh = self.oauth.STORE.issue_pair()
+        self.assertTrue(self.oauth.STORE.valid_access(access))
+        self.assertFalse(self.oauth.STORE.valid_access(refresh))  # refresh is not an access token
+        self.assertFalse(self.oauth.STORE.valid_access("nope"))
+        self.assertFalse(self.oauth.STORE.valid_access(""))
+        # tokens are stored hashed, never in clear
+        raw = open(self.oauth.STORE.path).read()
+        self.assertNotIn(access, raw)
+
+    def test_resource_must_be_this_server(self):
+        good = {"response_type": "code", "client_id": self.oauth.CLIENT_ID,
+                "redirect_uri": "https://chatgpt.com/connector/oauth/haBfcbUSd2V",
+                "code_challenge_method": "S256", "code_challenge": self.challenge,
+                "resource": "https://fuchs.obebi4.xyz/learn/mcp"}
+        self.assertIsNone(self.oauth._params_ok(good))
+        self.assertIsNone(self.oauth._params_ok(dict(good, resource="https://fuchs.obebi4.xyz/learn/mcp/")))
+        self.assertIsNotNone(self.oauth._params_ok(dict(good, resource="https://evil.example/mcp")))
+
+    def test_token_bound_to_resource(self):
+        access, _ = self.oauth.STORE.issue_pair()
+        self.assertTrue(self.oauth.STORE.valid_access(access))
+        other, _ = self.oauth.STORE.issue_pair("https://evil.example/mcp")
+        self.assertFalse(self.oauth.STORE.valid_access(other))
