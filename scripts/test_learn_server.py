@@ -460,6 +460,20 @@ class TestStartup(unittest.TestCase):
             self.assertNotEqual(self.run_server("--token-file", str(f), "--port", "0").returncode, 0)
             self.assertNotEqual(self.run_server("--token-file", str(Path(d) / "missing"), "--port", "0").returncode, 0)
 
+    def test_warns_about_a_missing_home_and_a_slow_png_converter(self):
+        import shutil
+        real = shutil.which
+        with tempfile.TemporaryDirectory() as d:
+            core = S.Core(os.path.join(d, "learning"))
+            try:
+                shutil.which = lambda exe: None
+                self.assertEqual([w.split()[0] for w in S.startup_warnings(core)], [str(core.home), "rsvg-convert"])
+                shutil.which = lambda exe: f"/usr/bin/{exe}"
+                core.home.mkdir()
+                self.assertEqual(S.startup_warnings(core), [])
+            finally:
+                shutil.which = real
+
 
 class TestStdio(unittest.TestCase):
     def test_mcp_over_stdio(self):

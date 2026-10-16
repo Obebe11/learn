@@ -527,7 +527,7 @@ class TestGraphViews(GraphBase):
         self.assertIn("no working SVG", msg)
         self.assertTrue(os.path.exists(os.path.join(self.tmp.name, "g.svg")))
 
-    def run_png(self, *argv, converter=None):
+    def run_png(self, *argv, converter=None, exe="fake"):
         """`learn graph --format png` with a fake converter: (stdout, stderr, svg root, converter calls)."""
         import xml.etree.ElementTree as ET
         import learn_graph as G
@@ -536,7 +536,7 @@ class TestGraphViews(GraphBase):
         def fake(svg, png):
             calls.append(svg)
             Path(png).write_bytes(converter(svg) if converter else b"\x89PNG fake")
-            return "fake"
+            return exe
         G.svg_to_png = fake
         out, err = io.StringIO(), io.StringIO()
         try:
@@ -630,6 +630,39 @@ class TestGraphViews(GraphBase):
             shutil.which, G.subprocess.run = real_which, real_run
         self.assertEqual(used, ["magick", "rsvg-convert"])
         self.assertEqual(Path(png).read_bytes(), b"png")
+
+    def test_png_from_a_slower_converter_suggests_rsvg(self):
+        import learn_graph as G
+        _, err, _, _ = self.run_png(exe="convert")
+        self.assertIn("png: convert", err)
+        self.assertIn("librsvg2-bin", err)
+        Path(self.home, "plans", "ai", "graph.svg").unlink()  # not the cache: render again
+        _, err, _, _ = self.run_png(exe=G.BEST_PNG)
+        self.assertIn("png: rsvg-convert", err)
+        self.assertNotIn("librsvg2-bin", err)
+
+    def test_a_circle_of_tracks_is_broken_where_fewest_arrows_point_back(self):
+        import learn_graph as G
+        # A needs B and D, B needs A, D needs B: starting at B costs one arrow back (A→B), at A two
+        model = {"level": "units", "tracks": [], "nodes": [{"id": i, "unit": i, "kind": "lesson"} for i in "ABD"],
+                 "edges": [("B", "A"), ("D", "A"), ("A", "B"), ("B", "D")]}
+        _, _, row, _ = G._layout(model)
+        self.assertEqual([(a, b) for a, b in model["edges"] if row[b] <= row[a]], [("A", "B")])
+
+    def test_units_map_spreads_points_over_the_columns(self):
+        import math
+        import learn_graph as G
+        # 21 tracks, mostly chained one or two per level: wrapping each level from column 0 piled them up on the left
+        ids = [f"T{i}" for i in range(21)]
+        edges = [(ids[i - 1], ids[i]) for i in range(1, 15)] + [(ids[i - 7], ids[i]) for i in range(15, 21)]
+        model = {"level": "units", "tracks": [], "nodes": [{"id": i, "unit": i, "kind": "lesson"} for i in ids],
+                 "edges": edges}
+        cols, col, row, _ = G._layout(model)
+        loads = [sum(1 for n in col if col[n] == c) for c in cols]
+        self.assertLessEqual(max(loads), math.ceil(len(ids) / len(cols)))
+        self.assertEqual(len({(col[n], row[n]) for n in col}), len(ids))
+        for a, b in edges:
+            self.assertLess(row[a], row[b])
 
     def test_tracks_needing_each_other_in_a_circle_warn_and_still_draw(self):
         plan = json.loads(json.dumps(GRAPH_PLAN))

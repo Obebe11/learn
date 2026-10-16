@@ -27,6 +27,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -699,6 +700,16 @@ def read_token(args):
     return token
 
 
+def startup_warnings(core):
+    out = []
+    if not core.home.exists():
+        out.append(f"{core.home} does not exist yet — run `learn init --language ru --timezone ...` first")
+    if not shutil.which("rsvg-convert"):
+        out.append("rsvg-convert not found: learn_graph_image falls back to ImageMagick (blurrier, several times "
+                   "slower) — `sudo apt install librsvg2-bin`")
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="learn-server", description=__doc__.split("\n\n")[0])
     ap.add_argument("--home", help="data directory (default: $LEARN_HOME or ~/learning)")
@@ -712,8 +723,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     core = Core(args.home or os.environ.get("LEARN_HOME") or "~/learning")
-    if not core.home.exists():
-        print(f"warning: {core.home} does not exist yet — run `learn init --language ru --timezone ...` first", file=sys.stderr)
+    for w in startup_warnings(core):
+        print(f"warning: {w}", file=sys.stderr)
     if args.stdio:
         return serve_stdio(core)
 

@@ -479,19 +479,18 @@ def _depths(order, preds):
     """Longest prerequisite chain above each node, without recursion (Kahn's order).
 
     Lessons never form a cycle (validate refuses it), but tracks may need each other both ways; then the
-    first stuck node in `order` is placed as if its unplaced prerequisites were not there, and the rest follows."""
+    stuck node with the fewest unplaced prerequisites (first in `order` on a tie) is placed as if those were not
+    there — each of them becomes one arrow pointing back up, so this keeps such arrows few — and the rest follows."""
     known = set(order)
     ps = {n: (set(preds[n]) & known) - {n} for n in order}
     succ, waiting = defaultdict(list), {n: len(ps[n]) for n in order}
     for n in order:
         for p in ps[n]:
             succ[p].append(n)
-    depth, queue, k = {}, deque(n for n in order if not waiting[n]), 0
+    depth, queue = {}, deque(n for n in order if not waiting[n])
     while len(depth) < len(order):
-        if not queue:  # a cycle: break it at the first node not placed yet
-            while order[k] in depth:
-                k += 1
-            queue.append(order[k])
+        if not queue:  # a cycle: break it where the fewest arrows have to point back
+            queue.append(min((n for n in order if n not in depth), key=lambda n: waiting[n]))
         n = queue.popleft()
         if n in depth:
             continue
@@ -511,12 +510,19 @@ def _layout(model):
     depth = _depths(list(nodes), preds)
     index = {n["id"]: i for i, n in enumerate(model["nodes"])}
     if model["level"] == "units":  # no lanes: rows follow the prerequisites, wrapped UNIT_COLS wide
-        col, row, r, c, prev = {}, {}, -1, 0, None
+        ncols = min(UNIT_COLS, len(nodes))
+        col, row, load, r, used, prev = {}, {}, [0] * ncols, -1, set(), None
         for n in sorted(nodes, key=lambda i: (depth[i], index[i])):
-            if depth[n] != prev or c == UNIT_COLS:
-                r, c, prev = r + 1, 0, depth[n]
-            col[n], row[n], c = c, r, c + 1
-        return list(range(min(UNIT_COLS, len(nodes)))), col, row, preds
+            if depth[n] != prev or len(used) == ncols:
+                r, used, prev = r + 1, set(), depth[n]
+            # the emptiest free column (so no column piles up), nearest to the prerequisites (short arrows)
+            near = [col[p] for p in preds[n] if p in col]
+            aim = sum(near) / len(near) if near else 0
+            c = min((c for c in range(ncols) if c not in used), key=lambda c: (load[c], abs(c - aim), c))
+            col[n], row[n] = c, r
+            used.add(c)
+            load[c] += 1
+        return list(range(ncols)), col, row, preds
     cols = _column_order(model["tracks"], model["edges"], {i: n["unit"] for i, n in nodes.items()})
     col = {n: cols.index(nodes[n]["unit"]) for n in nodes}
     row, last = {}, defaultdict(lambda: -1)
@@ -800,6 +806,11 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     return "\n".join(out)
 
 
+BEST_PNG = "rsvg-convert"
+PNG_TIP = ("`apt install librsvg2-bin` (rsvg-convert) draws sharper text and arrows than ImageMagick, "
+           "in a fraction of the time")
+
+
 def svg_to_png(svg_path, png_path):
     """Convert with the first converter installed (fastest first); return its name, raise RuntimeError if none works.
 
@@ -808,7 +819,7 @@ def svg_to_png(svg_path, png_path):
     final = Path(png_path)
     svg_path, png_path = str(svg_path), str(final.with_name(f".tmp-{os.getpid()}-{final.name}"))  # atomic: rename at the end
     attempts = [
-        ("rsvg-convert", ["rsvg-convert", "-o", png_path, svg_path]),
+        (BEST_PNG, [BEST_PNG, "-o", png_path, svg_path]),
         ("inkscape", ["inkscape", svg_path, "--export-type=png", f"--export-filename={png_path}"]),
         ("magick", ["magick", "-background", "white", svg_path, png_path]),
         ("convert", ["convert", "-background", "white", svg_path, png_path]),
