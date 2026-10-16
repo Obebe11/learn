@@ -19,6 +19,7 @@ Run `learn <command> -h` for details.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -419,6 +420,12 @@ def normalize_plan(plan, today, warnings=None):
                 errs.append(f"lesson {lid}: kind must be one of {sorted(KINDS)}")
             if not l.get("check"):
                 errs.append(f"lesson {lid}: needs a 'check' (how mastery is verified)")
+            # Python is its own track (PY): a non-PY lesson whose check needs code drags in
+            # skills the learner hasn't studied yet (seen in M01 — 'те же в Python-списках').
+            if (re.search(r"python", f"{l.get('check', '')} {l.get('objective', '')}", re.I)
+                    and u.get("id") != "PY" and warnings is not None):
+                warnings.append(f"lesson {lid} ({u.get('id')}) requires Python in its check/objective; "
+                                f"Python skills belong to track PY — move the code part there or drop it")
             for oid in l.get("outcomes", []):
                 if oid not in outcome_ids:
                     errs.append(f"lesson {lid}: unknown outcome {oid}")
