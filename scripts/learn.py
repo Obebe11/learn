@@ -965,6 +965,8 @@ def cmd_graph(args):
             raise LearnError(f"{e}\n(SVG saved at {svg_path})")
         size = out.stat().st_size
         print(f"png: {exe}, {time.monotonic() - t0:.1f} s, {size // 1024} KB", file=sys.stderr)
+        if exe != G.BEST_PNG:
+            print(f"png: tip — {G.PNG_TIP}", file=sys.stderr)
         if not max_px or size <= MAX_PNG_BYTES or scale <= 1:
             break
         scale, max_px = max(1, scale * 0.75), max_px * 0.75  # too heavy for a chat: smaller, same layout
