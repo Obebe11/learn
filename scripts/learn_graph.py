@@ -18,7 +18,7 @@ import os
 import shutil
 import subprocess
 import xml.sax.saxutils as xml
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 
 SATISFIED = ("done", "skipped")
@@ -62,27 +62,38 @@ def requires_map(plan):
 
 
 def find_cycle(reqs):
-    """Return one cycle as a list of ids, or None."""
-    state = {}
+    """Return one cycle as a list of ids (first == last), or None.
 
-    def visit(n, path):
-        state[n] = 1
-        for m in reqs.get(n, []):
-            if state.get(m) == 1:
-                return path[path.index(m):] + [m] if m in path else [m, n, m]
-            if m not in state:
-                cyc = visit(m, path + [m])
-                if cyc:
-                    return cyc
-        state[n] = 2
-        return None
-
-    for n in reqs:
-        if n not in state:
-            cyc = visit(n, [n])
-            if cyc:
-                return cyc
+    Iterative depth-first search: a plan with a 1000-lesson chain must not hit Python's recursion limit."""
+    state = {}  # 1 = on the current path, 2 = finished
+    for root in reqs:
+        if root in state:
+            continue
+        path, stack = [root], [iter(reqs.get(root, []))]
+        state[root] = 1
+        while stack:
+            for m in stack[-1]:
+                if state.get(m) == 1:
+                    return path[path.index(m):] + [m]
+                if m not in state:
+                    state[m] = 1
+                    path.append(m)
+                    stack.append(iter(reqs.get(m, [])))
+                    break
+            else:
+                state[path.pop()] = 2
+                stack.pop()
     return None
+
+
+def unit_requires(plan):
+    """track id -> the other tracks its lessons need (the edges of the one-point-per-track map)."""
+    units, out = unit_of(plan), {u["id"]: [] for u in plan["units"]}
+    for lid, rs in requires_map(plan).items():
+        for r in rs:
+            if r in units and units[r] != units[lid] and units[r] not in out[units[lid]]:
+                out[units[lid]].append(units[r])
+    return out
 
 
 def graph_warnings(plan):
@@ -103,6 +114,11 @@ def graph_warnings(plan):
                           if l.get("kind") != "junction" and len({units.get(r) for r in reqs[l["id"]]}) > 1]
     if non_junction_multi:
         out.append("lessons that combine several tracks should be kind 'junction': " + ", ".join(non_junction_multi))
+    cyc = find_cycle(unit_requires(plan))
+    if cyc:
+        out.append(f"tracks need each other in a circle ({' → '.join(cyc)}, each needs the next): fine for lessons, "
+                   "but on the one-point-per-track map some arrows point up. To avoid it, move the lesson that "
+                   "closes the circle into the other track or make it a junction in a projects track")
     if len(plan["units"]) < 2:
         out.append("graph mode with a single track is just a chain — add a second track or drop 'graph'")
     return out
@@ -459,20 +475,40 @@ def _column_order(tracks, edges, unit):
     return list(min(itertools.permutations(ids), key=cost))
 
 
+def _depths(order, preds):
+    """Longest prerequisite chain above each node, without recursion (Kahn's order).
+
+    Lessons never form a cycle (validate refuses it), but tracks may need each other both ways; then the
+    first stuck node in `order` is placed as if its unplaced prerequisites were not there, and the rest follows."""
+    known = set(order)
+    ps = {n: (set(preds[n]) & known) - {n} for n in order}
+    succ, waiting = defaultdict(list), {n: len(ps[n]) for n in order}
+    for n in order:
+        for p in ps[n]:
+            succ[p].append(n)
+    depth, queue, k = {}, deque(n for n in order if not waiting[n]), 0
+    while len(depth) < len(order):
+        if not queue:  # a cycle: break it at the first node not placed yet
+            while order[k] in depth:
+                k += 1
+            queue.append(order[k])
+        n = queue.popleft()
+        if n in depth:
+            continue
+        depth[n] = 1 + max((depth[p] for p in ps[n] if p in depth), default=-1)
+        for m in succ[n]:
+            waiting[m] -= 1
+            if not waiting[m]:
+                queue.append(m)
+    return depth
+
+
 def _layout(model):
     nodes = {n["id"]: n for n in model["nodes"]}
     preds = defaultdict(list)
     for a, b in model["edges"]:
         preds[b].append(a)
-    depth = {}
-
-    def d(n):
-        if n not in depth:
-            depth[n] = 0 if not preds[n] else 1 + max(d(p) for p in preds[n])
-        return depth[n]
-
-    for n in nodes:
-        d(n)
+    depth = _depths(list(nodes), preds)
     index = {n["id"]: i for i, n in enumerate(model["nodes"])}
     if model["level"] == "units":  # no lanes: rows follow the prerequisites, wrapped UNIT_COLS wide
         col, row, r, c, prev = {}, {}, -1, 0, None
@@ -515,28 +551,27 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     nrows = max(row.values(), default=0) + 1
     margin = 20
     lanes = model["level"] != "units"
-    top = TOP if lanes else TOP - 40  # no lane headers to make room for
-    width = max(len(cols) * COL_W + 2 * margin, 640)
+    col_w = COL_W if len(cols) > 1 or not lanes else 2 * COL_W  # one track: room for whole lesson titles
+    width = max(len(cols) * col_w + 2 * margin, 640)
     if max_px:
         scale = min(scale, max_px / width)
-    left = (width - len(cols) * COL_W) / 2
+    left = (width - len(cols) * col_w) / 2
     body_h = nrows * ROW_H
-    lane_bottom = top + 14 + body_h
-    has_succ = {a for a, _ in model["edges"]}
-    sinks = [i for i in nodes if i not in has_succ]  # the ends of the branches: they all lead to the goal
-    goal_text = plan.get("goal") or title
-    gx, gy = width / 2, lane_bottom + 46 + GOAL_R
-    goal_lines = _wrap(f"{L['goal']}: {goal_text}", 13, min(width - 2 * margin, 520), 2, True)
-    height = gy + GOAL_R + 26 + 17 * len(goal_lines) + 52
 
     def color(unit):
         return TRACK_COLORS[tindex[unit] % len(TRACK_COLORS)]
 
     def xy(nid):
-        return left + col[nid] * COL_W + 34, top + 22 + row[nid] * ROW_H + ROW_H / 2
+        return left + col[nid] * col_w + 34, top + 22 + row[nid] * ROW_H + ROW_H / 2
+
+    def id_size(nid):
+        return 10.5 if len(nodes[nid]["short"]) > 3 else 11.5
 
     def radius(nid):
-        return NODE_R + 6 if nodes[nid]["kind"] in ("junction", "unit") else NODE_R
+        """Wide enough for the id inside it: long ids never spill over the ring."""
+        base = NODE_R + 6 if nodes[nid]["kind"] in ("junction", "unit") else NODE_R
+        inner = _text_w(nodes[nid]["short"], id_size(nid), True) / 2 + 5
+        return max(base, round(inner * (1.45 if nodes[nid]["kind"] == "junction" else 1), 1))
 
     def esc(t):
         return xml.escape(str(t))
@@ -546,19 +581,12 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size}" font-weight="{weight}" fill="{fill}" '
                 f'text-anchor="{anchor}"{h}{extra}>{esc(s)}</text>')
 
-    W, H = width * scale, height * scale
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H:.0f}" '
-           f'viewBox="0 0 {width:.0f} {height:.0f}" font-family="{FONT}">',
-           f"<title>{esc(title)}</title>", "<defs>"]
-    for i, c in enumerate(TRACK_COLORS + [FAINT]):
-        out.append(f'<marker id="ar{i}" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" '
-                   f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{c}"/></marker>')
-    out += ["</defs>", '<rect width="100%" height="100%" fill="#ffffff"/>']
-
-    # --- header: title, overall progress, what to do next ---
+    # --- header: title, overall progress, what to do next — wrapped, never cut ---
+    head = []
     done = sum(1 for n in model["nodes"] if n["status"] == "done") if done is None else done
     total = len(model["nodes"]) if total is None else total
-    head_w = width - 2 * margin  # room left of the speed badge
+    bar_w = width - 2 * margin
+    head_w = bar_w  # room left of the speed badge
     if speed and speed.get("speed") is not None:
         def num(v, fmt):
             return format(v, fmt).replace(".", ",") if L is SVG_TEXT["ru"] else format(v, fmt)
@@ -568,16 +596,19 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         small = L["per_day"].format(a=num(speed["lessons_per_day"], ".1f"), n=num(speed["needed_per_day"], ".1f"))
         pw = max(_text_w(big, 16, True), _text_w(small, 11)) + 28
         px = width - margin - pw
-        out.append(f'<g><title>{esc(big)} = {esc(small)}</title>'
-                   f'<rect x="{px:.1f}" y="14" width="{pw:.1f}" height="50" rx="10" fill="{tone}" fill-opacity="0.1" '
-                   f'stroke="{tone}" stroke-width="1.5"/>'
-                   + text(px + pw / 2, 36, big, 16, tone, "bold", "middle")
-                   + text(px + pw / 2, 54, small, 11, tone, anchor="middle") + "</g>")
+        head.append(f'<g><title>{esc(big)} = {esc(small)}</title>'
+                    f'<rect x="{px:.1f}" y="14" width="{pw:.1f}" height="50" rx="10" fill="{tone}" fill-opacity="0.1" '
+                    f'stroke="{tone}" stroke-width="1.5"/>'
+                    + text(px + pw / 2, 36, big, 16, tone, "bold", "middle")
+                    + text(px + pw / 2, 54, small, 11, tone, anchor="middle") + "</g>")
         head_w -= pw + 16
     tsize = 22
-    while _text_w(title, tsize, True) > head_w and tsize > 14:
+    while _text_w(title, tsize, True) > head_w and tsize > 18:
         tsize -= 1
-    out.append(text(margin, 38, _wrap(title, tsize, head_w, 1, True)[0], tsize, INK, "bold"))
+    y = 38
+    for k, line in enumerate(_wrap(title, tsize, head_w, 99, True)):
+        y = 38 + k * round(tsize * 1.25)
+        head.append(text(margin, y, line, tsize, INK, "bold"))
     pct = round(100 * done / total) if total else 0
     statuses = [n["status"] for n in model["nodes"]]
     stats = [f"{done}/{total} {L['of']} · {pct}%"]
@@ -587,36 +618,60 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             stats.append(f"{L['retries']}: {statuses.count('retry')}")
     if today:
         stats.append(".".join(reversed(today.split("-"))) if L is SVG_TEXT["ru"] else today)
-    out.append(text(margin, 62, _wrap(" · ".join(stats), 13, head_w, 1)[0], 13, MUTED))
-    bar_w = width - 2 * margin
-    out.append(f'<rect x="{margin}" y="74" width="{bar_w}" height="8" rx="4" fill="#eceff1"/>')
+    y += 24
+    for k, line in enumerate(_wrap(" · ".join(stats), 13, head_w if y < 72 else bar_w, 99)):
+        y += 17 if k else 0
+        head.append(text(margin, y, line, 13, MUTED))
+    y = max(y + 12, 74)  # below the speed badge
+    head.append(f'<rect x="{margin}" y="{y}" width="{bar_w}" height="8" rx="4" fill="#eceff1"/>')
     if total and done:
-        out.append(f'<rect x="{margin}" y="74" width="{max(8, bar_w * done / total):.1f}" height="8" rx="4" fill="#43a047"/>')
+        head.append(f'<rect x="{margin}" y="{y}" width="{max(8, bar_w * done / total):.1f}" height="8" rx="4" fill="#43a047"/>')
+    y += 30
     if picks:
-        head, items = L["today_list"], [nodes[p] for p in picks]
+        hd, items = L["today_list"], [nodes[p] for p in picks]
     else:
-        head, items = L["ready_list"], [n for n in model["nodes"] if n["status"] in ("available", "retry")]
+        hd, items = L["ready_list"], [n for n in model["nodes"] if n["status"] in ("available", "retry")]
     if items and model["level"] == "lessons":
-        line = f"{head}: " + " · ".join(f"{n['id']} {n['label']}" if len(items) <= 2 else n["id"] for n in items[:12])
-        out.append(text(margin, 104, _wrap(line, 13, bar_w, 1, True)[0], 13, INK, "bold"))
+        line = f"{hd}: " + " · ".join(f"{n['id']} {n['label']}" if len(items) <= 2 else n["id"] for n in items[:12])
+        for k, part in enumerate(_wrap(line, 13, bar_w, 4, True)):
+            y += 17 if k else 0
+            head.append(text(margin, y, part, 13, INK, "bold"))
     elif total and done == total:
-        out.append(text(margin, 104, L["finished"], 13, "#2e7d32", "bold"))
+        head.append(text(margin, y, L["finished"], 13, "#2e7d32", "bold"))
+    top = y + (TOP - 104 if lanes else TOP - 144)  # lanes start below the header (units: no lane headers)
+
+    lane_bottom = top + 14 + body_h
+    has_succ = {a for a, b in model["edges"] if row[b] > row[a]}
+    sinks = [i for i in nodes if i not in has_succ]  # the ends of the branches (nothing below): they all lead to the goal
+    goal_text = plan.get("goal") or title
+    gx, gy = width / 2, lane_bottom + 46 + GOAL_R
+    goal_lines = _wrap(f"{L['goal']}: {goal_text}", 13, min(width - 2 * margin, 600), 99, True)
+    height = gy + GOAL_R + 26 + 17 * len(goal_lines) + 52
+
+    W, H = width * scale, height * scale
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H:.0f}" '
+           f'viewBox="0 0 {width:.0f} {height:.0f}" font-family="{FONT}">',
+           f"<title>{esc(title)}</title>", "<defs>"]
+    for i, c in enumerate(TRACK_COLORS + [FAINT]):
+        out.append(f'<marker id="ar{i}" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" '
+                   f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{c}"/></marker>')
+    out += ["</defs>", '<rect width="100%" height="100%" fill="#ffffff"/>'] + head
 
     # --- columns: tinted lane, title, mini progress bar ---
     for i, tid in enumerate(cols if lanes else ()):
         t, c = tracks[tid], color(tid)
-        x0 = left + i * COL_W
-        out.append(f'<rect x="{x0 + 4:.1f}" y="{TOP - 44}" width="{COL_W - 8}" height="{body_h + 58}" rx="12" '
+        x0 = left + i * col_w
+        out.append(f'<rect x="{x0 + 4:.1f}" y="{top - 44:.1f}" width="{col_w - 8}" height="{body_h + 58}" rx="12" '
                    f'fill="{c}" fill-opacity="0.045"/>')
-        out.append(f'<rect x="{x0 + 4:.1f}" y="{TOP - 44}" width="{COL_W - 8}" height="4" rx="2" fill="{c}"/>')
-        for k, line in enumerate(_wrap(t["title"], 12, COL_W - 28, 2, True)):
-            out.append(text(x0 + 14, TOP - 22 + k * 15, line, 12, c, "bold"))
-        bw = COL_W - 80
-        out.append(f'<rect x="{x0 + 14:.1f}" y="{TOP + 4}" width="{bw}" height="6" rx="3" fill="{c}" fill-opacity="0.15"/>')
+        out.append(f'<rect x="{x0 + 4:.1f}" y="{top - 44:.1f}" width="{col_w - 8}" height="4" rx="2" fill="{c}"/>')
+        for k, line in enumerate(_wrap(t["title"], 12, col_w - 28, 2, True)):
+            out.append(text(x0 + 14, top - 22 + k * 15, line, 12, c, "bold"))
+        bw = col_w - 80
+        out.append(f'<rect x="{x0 + 14:.1f}" y="{top + 4:.1f}" width="{bw}" height="6" rx="3" fill="{c}" fill-opacity="0.15"/>')
         if t["done"]:
-            out.append(f'<rect x="{x0 + 14:.1f}" y="{TOP + 4}" width="{max(6, bw * t["done"] / t["total"]):.1f}" '
+            out.append(f'<rect x="{x0 + 14:.1f}" y="{top + 4:.1f}" width="{max(6, bw * t["done"] / t["total"]):.1f}" '
                        f'height="6" rx="3" fill="{c}"/>')
-        out.append(text(x0 + COL_W - 14, TOP + 11, f"{t['done']}/{t['total']}", 11, MUTED, anchor="end"))
+        out.append(text(x0 + col_w - 14, top + 11, f"{t['done']}/{t['total']}", 11, MUTED, anchor="end"))
 
     # --- edges, under the nodes ---
     in_col = defaultdict(list)
@@ -625,6 +680,13 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     edges_out = []
     for a, b in model["edges"]:
         (x1, y1), (x2, y2) = xy(a), xy(b)
+        if row[b] <= row[a]:  # tracks that need each other in a circle: this arrow goes back up, round the left
+            mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS)
+            sx, ex, bulge = x1 - radius(a) - 2, x2 - radius(b) - 3, 34
+            edges_out.append(f'<path d="M{sx:.1f},{y1:.1f} C{sx - bulge:.1f},{y1:.1f} {ex - bulge:.1f},{y2:.1f} '
+                             f'{ex:.1f},{y2:.1f}" fill="none" stroke="{TRACK_COLORS[mi]}" stroke-width="1.5" '
+                             f'stroke-opacity="0.6" stroke-dasharray="5 3" marker-end="url(#ar{mi})"/>')
+            continue
         walked = nodes[a]["status"] in SATISFIED
         same = lanes and col[a] == col[b]
         mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS) if (walked or not same) else len(TRACK_COLORS)
@@ -691,12 +753,12 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
                      f'stroke-linejoin="round" {common}/>')
         else:
             g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" {common}/>')
-        g.append(text(x, y + 4, n["short"], 10.5 if len(n["short"]) > 3 else 11.5, idc, "bold", "middle"))
+        g.append(text(x, y + 4, n["short"], id_size(nid), idc, "bold", "middle"))
         if st == "retry":
             g.append(f'<circle cx="{x + r * 0.75:.1f}" cy="{y - r * 0.75:.1f}" r="6.5" fill="#ef6c00"/>'
                      + text(x + r * 0.75, y - r * 0.75 + 3.5, "!", 10, "#ffffff", "bold", "middle"))
         lab = n["label"]
-        lines = _wrap(lab, 11.5, COL_W - 70, 2, weight == "bold")
+        lines = _wrap(lab, 11.5, col_w - 52 - r - (4 if nid in picks else 0), 2, weight == "bold")
         ty = y + 4 - (len(lines) - 1) * 7
         for k, line in enumerate(lines):
             g.append(text(x + r + (14 if nid in picks else 10), ty + k * 14, line, 11.5, labc,

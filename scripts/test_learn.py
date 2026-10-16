@@ -631,6 +631,67 @@ class TestGraphViews(GraphBase):
         self.assertEqual(used, ["magick", "rsvg-convert"])
         self.assertEqual(Path(png).read_bytes(), b"png")
 
+    def test_tracks_needing_each_other_in_a_circle_warn_and_still_draw(self):
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["units"][0]["lessons"].append(lesson("P4", "Bot polish", kind="junction", requires=["J1", "P3"]))
+        Path(self.gfile).write_text(json.dumps(plan))
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            self.assertEqual(learn.main(["--home", self.home, "create", "ai", "--file", self.gfile, "--update"]), 0)
+        self.assertIn("tracks need each other in a circle (PY → PR → PY", err.getvalue())
+        _, _, root, _ = self.run_png("--level", "units")
+        ns = "{http://www.w3.org/2000/svg}"
+        self.assertTrue(any(p.get("stroke-dasharray") == "5 3" for p in root.iter(ns + "path")))  # the arrow back up
+        gx = float(root.get("viewBox").split()[2]) / 2
+        ends = [p.get("d").split()[-1] for p in root.iter(ns + "path") if p.get("fill") == "none"]
+        self.assertTrue(any(float(e.split(",")[0]) == round(gx, 1) for e in ends))  # something still reaches the goal
+
+    def test_long_chains_need_no_recursion(self):
+        import learn_graph as G
+        n = 3000
+        reqs = {f"L{i}": [f"L{i - 1}"] if i else [] for i in range(n)}
+        self.assertIsNone(G.find_cycle(reqs))
+        reqs["L0"] = [f"L{n - 1}"]
+        self.assertEqual(len(G.find_cycle(reqs)), n + 1)
+        model = {"level": "lessons", "tracks": [{"id": "U", "title": "U", "done": 0, "total": n, "ready": []}],
+                 "nodes": [{"id": f"L{i}", "unit": "U", "kind": "lesson"} for i in range(n)],
+                 "edges": [(f"L{i - 1}", f"L{i}") for i in range(1, n)]}
+        _, _, row, _ = G._layout(model)
+        self.assertEqual(row[f"L{n - 1}"], n - 1)
+        cyc = dict(model, level="units", edges=model["edges"] + [(f"L{n - 1}", "L0")])
+        self.assertEqual(len(G._layout(cyc)[2]), n)
+
+    def test_one_track_header_goal_and_ids_are_never_cut(self):
+        import learn_graph as G
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["title"] = "AI-инженер · v2.1 · переезд июль 2027 · полный план с проектами, облаком и собеседованиями"
+        plan["goal"] = ("Этап 1 до 31.01.2027: Python и основы ML, первые проекты. "
+                        "Этап 2 до 31.05.2027: облако, сервисы, портфолио и собеседования")
+        plan["units"][0]["lessons"] = [lesson(f"PY{i:02d}", f"Python, тема {i}: генераторы") for i in range(1, 28)]
+        plan["units"][2]["lessons"][0]["requires"] = ["PY05", "A2"]
+        Path(self.gfile).write_text(json.dumps(plan))
+        self.run_cmd("create", "ai", "--file", self.gfile, "--update")
+        for lid in ("PY01", "PY02", "PY03"):
+            self.run_cmd("done", lid, "--score", "1")
+        _, _, root, _ = self.run_png("--track", "PY")
+        self.assert_phone_sized(root)
+        ns = "{http://www.w3.org/2000/svg}"
+        width = float(root.get("viewBox").split()[2])
+        texts = list(root.iter(ns + "text"))
+        self.assertFalse([t.text for t in texts if "…" in (t.text or "")])
+        joined = " ".join(t.text or "" for t in texts)
+        for words in ("собеседованиями", "портфолио и собеседования", "PY27"):
+            self.assertIn(words, joined)
+        for t in texts:  # every line fits the picture
+            w = G._text_w(t.text or "", float(t.get("font-size")), t.get("font-weight") == "bold")
+            x = float(t.get("x")) - {"start": 0, "middle": w / 2, "end": w}[t.get("text-anchor")]
+            self.assertTrue(0 <= x and x + w <= width + 1, t.text)
+        circles = {(c.get("cx"), c.get("cy")): float(c.get("r")) for c in root.iter(ns + "circle")}
+        for t in texts:  # ids sit inside their circle
+            if (t.text or "").startswith("PY") and t.get("text-anchor") == "middle":
+                r = max(r for (cx, cy), r in circles.items() if cx == t.get("x"))
+                self.assertLessEqual(G._text_w(t.text, float(t.get("font-size")), True), 2 * r - 6, t.text)
+
     def test_long_track_collapses(self):
         plan = json.loads(json.dumps(GRAPH_PLAN))
         plan["units"][0]["lessons"] = [lesson(f"P{i}", f"L{i}") for i in range(1, 21)]
