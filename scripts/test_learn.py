@@ -563,18 +563,80 @@ class TestGraphViews(GraphBase):
         smallest = min(float(t.get("font-size")) for t in root.iter(ns + "text"))
         self.assertGreaterEqual(smallest * px, 14)
 
-    def test_png_of_a_wide_plan_fits_a_phone_as_one_point_per_track(self):
+    def test_png_of_a_wide_plan_keeps_every_lesson_at_phone_size(self):
         self.big_plan()
         _, err, root, calls = self.run_png()
-        self.assertIn("21 tracks are too wide for a phone", err)
         self.assertIn("png: fake", err)  # the converter is named
         self.assert_phone_sized(root)
         tips = [t.text for t in root.iter("{http://www.w3.org/2000/svg}title")]
-        self.assertIn("T5 — Track number 5 (закрыто)", tips)
-        self.assertFalse(any(t.startswith("T5L1 ") for t in tips))
-        _, _, full, _ = self.run_png("--full")  # every lesson, natural size
-        self.assertGreater(float(full.get("width")), 4000)
+        for u in range(21):
+            for i in range(12):
+                self.assertTrue(any(t.startswith(f"T{u}L{i} — ") for t in tips), (u, i))
+        self.assertNotIn("one point per track", err)
+        _, _, full, _ = self.run_png("--full")  # same graph at its natural density
+        self.assertEqual(root.get("viewBox"), full.get("viewBox"))
+        self.assertEqual(full.get("width"), full.get("viewBox").split()[2])
         self.assertTrue(any(t.text.startswith("T5L1 ") for t in full.iter("{http://www.w3.org/2000/svg}title")))
+
+    def test_compact_map_packs_parallel_roots_and_keeps_every_prerequisite_above(self):
+        import learn_graph as G
+        # Anonymous stress case: many simultaneous roots, diamonds, cross-track dependencies and long ids.
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["units"] = [{"id": f"T{u}", "title": f"Track {u}", "lessons": [
+            lesson(f"T{u}L{i}", f"Topic {i}", **({"kind": "junction", "requires": [f"T{u}L{i - 1}", f"T{u - 1}L{i - 1}"]}
+                   if u and i else {})) for i in range(5)]} for u in range(21)]
+        model = G.build_model(plan, {"lessons": {}, "events": []})
+        snapshot = json.dumps(model)
+        cols, col, row, _ = G._compact_layout(model)
+        self.assertLessEqual(len(cols), 8)
+        self.assertEqual(len({(col[n], row[n]) for n in col}), 105)
+        for a, b in model["edges"]:
+            self.assertLess(row[a], row[b], (a, b))
+        self.assertEqual(json.dumps(model), snapshot)
+        self.assertEqual(G._compact_layout(model), G._compact_layout(model))
+
+    def test_compact_map_keeps_progress_speed_today_and_explicit_units_view(self):
+        self.big_plan(tracks=6)
+        self.run_cmd("done", "T0L0", "--score", "1", day="2026-10-05")
+        os.environ["LEARN_TODAY"] = "2026-10-06"
+        _, _, root, _ = self.run_png()
+        ns = "{http://www.w3.org/2000/svg}"
+        texts = " ".join(t.text or "" for t in root.iter(ns + "text"))
+        self.assertIn("1/72", texts)
+        self.assertIn("1%", texts)
+        self.assertIn("Скорость", texts)
+        self.assertIn("Сегодня:", texts)
+        self.assertTrue(any(c.get("stroke") == "#f9a825" for c in root.iter(ns + "circle")))
+        _, _, units, _ = self.run_png("--level", "units")
+        tips = [t.text for t in units.iter(ns + "title")]
+        self.assertIn("T0 — Track number 0 (готово)", tips)
+        self.assertFalse(any(t.startswith("T0L0 — ") for t in tips))
+
+    def test_node_fill_is_status_outline_is_track_and_convergence_is_a_diamond(self):
+        import xml.etree.ElementTree as ET
+        import learn_graph as G
+        statuses = ["done", "available", "retry", "locked", "skipped"]
+        model = {"level": "lessons", "tracks": [
+            {"id": f"T{i}", "title": f"Track {i}", "done": 2 if st == "done" else 0, "total": 2}
+            for i, st in enumerate(statuses)], "nodes": [
+            {"id": f"{shape}{i}", "short": f"{shape}{i}", "label": "Topic", "unit": f"T{i}",
+             "status": st, "kind": "lesson"} for i, st in enumerate(statuses) for shape in "CJ"],
+            "edges": [(source, f"J{i}") for i in range(5) for source in ("C0", "C1")]}
+        root = ET.fromstring(G.render_svg("Example", {"goal": "Practice"}, {}, model))
+        ns = "{http://www.w3.org/2000/svg}"
+        for i, st in enumerate(statuses):
+            for prefix, tag in (("C", "circle"), ("J", "polygon")):
+                group = next(g for g in root.iter(ns + "g")
+                             if (g.findtext(ns + "title") or "").startswith(f"{prefix}{i} — "))
+                shape = next(s for s in group if s.tag == ns + tag and s.get("stroke-width") == "3")
+                self.assertEqual(shape.get("fill"), G.STATUS_FILL[st])
+                self.assertEqual(shape.get("stroke"), G.FAINT if st == "skipped" else G.TRACK_COLORS[i])
+        # Every compact label and the track key fit inside the canvas, including long lesson ids.
+        width = float(root.get("viewBox").split()[2])
+        for t in root.iter(ns + "text"):
+            w = G._text_w(t.text or "", float(t.get("font-size")), t.get("font-weight") == "bold")
+            x = float(t.get("x")) - {"start": 0, "middle": w / 2, "end": w}[t.get("text-anchor")]
+            self.assertTrue(-1 <= x and x + w <= width + 1, t.text)
 
     def test_png_of_one_track_shows_its_lessons_readably(self):
         self.big_plan()
@@ -609,6 +671,14 @@ class TestGraphViews(GraphBase):
         _, err, root, calls = self.run_png(converter=heavy)
         self.assertEqual(len(calls), 2)
         self.assertLessEqual(float(root.get("width")), 1100)
+
+    def test_heavy_wide_png_stops_shrinking_while_labels_are_readable(self):
+        self.big_plan()
+        _, _, root, calls = self.run_png(converter=lambda _svg: b"x" * 2_000_000)
+        self.assertLessEqual(len(calls), 3)
+        self.assert_phone_sized(root)
+        tips = [t.text for t in root.iter("{http://www.w3.org/2000/svg}title")]
+        self.assertTrue(any(t.startswith("T20L11 — ") for t in tips))
 
     def test_svg_to_png_takes_the_first_installed_converter(self):
         import shutil
@@ -697,9 +767,9 @@ class TestGraphViews(GraphBase):
     def test_one_track_header_goal_and_ids_are_never_cut(self):
         import learn_graph as G
         plan = json.loads(json.dumps(GRAPH_PLAN))
-        plan["title"] = "AI-инженер · v2.1 · переезд июль 2027 · полный план с проектами, облаком и собеседованиями"
-        plan["goal"] = ("Этап 1 до 31.01.2027: Python и основы ML, первые проекты. "
-                        "Этап 2 до 31.05.2027: облако, сервисы, портфолио и собеседования")
+        plan["title"] = "Учебная программа · длинное название · полный курс с упражнениями, облаком и собеседованиями"
+        plan["goal"] = ("Первая часть: Python и основы ML, первые упражнения. "
+                        "Вторая часть: облако, сервисы, портфолио и собеседования")
         plan["units"][0]["lessons"] = [lesson(f"PY{i:02d}", f"Python, тема {i}: генераторы") for i in range(1, 28)]
         plan["units"][2]["lessons"][0]["requires"] = ["PY05", "A2"]
         Path(self.gfile).write_text(json.dumps(plan))

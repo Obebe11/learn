@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -904,7 +905,7 @@ def cmd_today(args):
     emit(args, data, "\n".join(lines))
 
 
-MAX_PNG_BYTES = 1_000_000  # a phone picture: bigger ones get re-rendered smaller
+MAX_PNG_BYTES = 1_000_000  # soft target: never shrink phone labels below 14 px
 
 
 def cmd_graph(args):
@@ -915,11 +916,6 @@ def cmd_graph(args):
         model = G.build_model(plan, prog, level, args.track)
     except KeyError as e:
         raise LearnError(e.args[0])
-    if phone and not G.phone_fit(model):
-        level, model = "units", G.build_model(plan, prog, "units")
-        print(f"note: {len(model['tracks'])} tracks are too wide for a phone — showing one point per track. "
-              f"One track in detail: --track <id> ({', '.join(t['id'] for t in model['tracks'])}); "
-              "every lesson in one big picture: --full", file=sys.stderr)
     if args.track:
         t = model["tracks"][0]
         title, done, total = f"{plan['title']} · {t['title']}", t["done"], t["total"]
@@ -967,9 +963,12 @@ def cmd_graph(args):
         print(f"png: {exe}, {time.monotonic() - t0:.1f} s, {size // 1024} KB", file=sys.stderr)
         if exe != G.BEST_PNG:
             print(f"png: tip — {G.PNG_TIP}", file=sys.stderr)
-        if not max_px or size <= MAX_PNG_BYTES or scale <= 1:
+        root = ET.fromstring(svg)
+        actual_scale = float(root.get("width")) / float(root.get("viewBox").split()[2])
+        min_scale = 14 / G.MIN_FONT
+        if not max_px or size <= MAX_PNG_BYTES or actual_scale <= min_scale + 0.001:
             break
-        scale, max_px = max(1, scale * 0.75), max_px * 0.75  # too heavy for a chat: smaller, same layout
+        scale = max(min_scale, actual_scale * 0.75)
     print(out)
 
 
@@ -1325,8 +1324,7 @@ def build_parser():
     p.add_argument("--track", help="only this track (unit id), every lesson of it — readable on a phone")
     p.add_argument("--scale", type=float, help="png: exact pixel density, 1..4 (default: fit a phone — 2x, at most 1400 px "
                                                "wide; --full: 1)")
-    p.add_argument("--full", action="store_true", help="png: every lesson of every track, however wide "
-                                                       "(by default plans with 5+ tracks show one point per track)")
+    p.add_argument("--full", action="store_true", help="png: natural size, without the phone width/file-size limits")
 
     p = add("start", cmd_start, "set the plan's start date (default: today)")
     p.add_argument("--date", help="YYYY-MM-DD")

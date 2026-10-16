@@ -280,17 +280,19 @@ TOOLS = [
           "level": {"type": "string", "enum": ["lessons", "units"]}, "track": TRACK}, readonly=True, structured=True),
     Tool("learn_graph_image",
          "The knowledge map as a picture — show it whenever the learner asks about progress, the map or what is next. "
-         "One column per track with its progress bar; filled = done, ringed = ready now, orange = retry, pale = locked, "
-         "diamond = junction, gold ring = today's lessons; every branch flows into one final point, the plan's goal; "
+         "All lessons and prerequisites; wide plans use a compact graph with a coloured track key. "
+         "Fill: green = done, yellow = available, orange = retry, grey = locked; outline and arrows = track colour. "
+         "Circle = lesson, diamond = several prerequisites converge, gold ring = today's lessons; "
+         "every branch flows into one final point, the plan's goal; "
          "a badge shows the speed (actual vs needed lessons/day). Returns the PNG itself, sized for a phone (at most 1400 px "
-         "wide, labels readable); plans with 5+ tracks come back as one point per track — then offer track=<id> for one "
-         "track in detail. Keeps a copy on the server and re-uses it while the map is unchanged. format=svg returns the vector file (for clients that render SVG; also the fallback when the server "
+         "wide, labels readable). level=units explicitly requests one point per track; track=<id> shows one track "
+         "in detail. Keeps a copy on the server and re-uses it while the map is unchanged. format=svg returns the vector file (for clients that render SVG; also the fallback when the server "
          "has no PNG converter).",
          graph_image,
          {"plan": PLAN, "level": {"type": "string", "enum": ["lessons", "units"]},
           "format": {"type": "string", "enum": ["png", "svg"]},
           "track": TRACK,
-          "full": {"type": "boolean", "description": "png: every lesson of every track in one big picture (not for phones)"},
+          "full": {"type": "boolean", "description": "png: natural size, without phone width/file-size limits"},
           "scale": {"type": "number", "minimum": 1, "maximum": 4,
                     "description": "exact png pixel density (default: fit a phone)"}},
          readonly=True),
