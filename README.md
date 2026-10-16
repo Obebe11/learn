@@ -94,12 +94,12 @@ learn init --language ru --timezone Europe/Moscow    # один раз (--chat-f
 learn config chat_format rich|plain                  # формат ответов в мессенджере
 learn create <slug> --file plan.json                 # создать/обновить план (--update)
 learn today [--track AI]                             # уроки на сегодня (в графе — из разных веток) + повторения
-learn graph [--format md|mermaid|svg|png]            # карта знаний: ветки, точки соединения ⭐, что готово ▶ / закрыто 🔒
+learn graph [--format md|mermaid|svg|png]            # карта знаний: ветки, точки соединения ⭐, что готово ▶ / закрыто 🔒 (png — картинка, MCP: learn_graph_image)
 learn start [--date YYYY-MM-DD]                      # начать/перенести старт плана
 learn done L07 --score 0.8 --note "путает X и Y"     # записать урок (<70% → повторить)
 learn card add --lesson L07 --stdin                  # карточки: [{"q": "...", "a": "..."}]
 learn review grade <plan>/C012 pass|fail             # результат повторения
-learn status | week | plans                          # прогресс, темп, прогноз окончания
+learn status | week | plans                          # прогресс, темп, скорость, прогноз окончания
 learn show [--md]                                    # сам план: JSON (для правки и create --update) или PLAN.md
 learn profile [--stdin]                              # профиль ученика (profile.md): показать / заменить текстом из stdin
 learn pause|resume|archive <slug>

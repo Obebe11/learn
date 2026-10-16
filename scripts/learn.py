@@ -299,6 +299,35 @@ def pace_report(plan, prog, today):
             "past_deadline": bool(finish and deadline and iso(finish) > deadline)}
 
 
+def speed_report(plan, prog, today):
+    """Speed = average lessons per day so far / average lessons per day the plan needs.
+
+    Actual: done lessons over calendar days since the start (today counts once a lesson is done today, so a
+    fresh morning doesn't drag the average down). Needed: with a deadline, the remaining-at-start work spread
+    over start..deadline; otherwise the plan's pace (lessons_per_day x study days per week / 7).
+    1.0 = exactly on schedule, below 1 = slower than needed. None until there is a day to average over.
+    """
+    start = effective_start(plan, prog)
+    if today < start:
+        return None
+    done = [prog["lessons"][l["id"]] for l in lessons_of(plan) if lesson_state(prog, l["id"]) == "done"]
+    days = (today - start).days + (1 if any(rec.get("date") == iso(today) for rec in done) else 0)
+    if days <= 0:
+        return None
+    pace = plan["pace"]
+    deadline = plan.get("deadline")
+    c = counts(plan, prog)
+    work = c["total"] - c["skipped"]
+    if deadline and parse_date(deadline) >= start:
+        needed = work / ((parse_date(deadline) - start).days + 1)
+    else:
+        needed = pace["lessons_per_day"] * len(pace["days"]) / 7
+    actual = len(done) / days
+    return {"lessons_per_day": round(actual, 2), "needed_per_day": round(needed, 2),
+            "speed": round(actual / needed, 2) if needed else None, "days": days,
+            "basis": "deadline" if deadline and parse_date(deadline) >= start else "pace"}
+
+
 def due_cards(plan_slug, prog, today, include_future=False):
     out = []
     for c in prog["cards"]:
@@ -738,7 +767,8 @@ def plan_status_summary(st, slug, plan, prog):
     return {"slug": slug, "title": plan["title"], "status": prog["status"], **c,
             "percent": pct(c["done"], c["total"]),
             "pace": {"lessons_per_day": plan["pace"]["lessons_per_day"], "days": plan["pace"]["days"],
-                     **{k: pr[k] for k in ("behind", "ahead", "projected_finish", "past_deadline")}},
+                     **{k: pr[k] for k in ("behind", "ahead", "projected_finish", "past_deadline")},
+                     "speed": speed_report(plan, prog, st.today)},
             "cards": len(cards), "reviews_due": len(due),
             "next_lesson": nxt[0]["id"] if nxt else None}
 
@@ -767,6 +797,10 @@ def cmd_status(args):
                   + (f" · finish ≈ {p['projected_finish']}" if p["projected_finish"] else "")
                   + (" ⚠ after deadline" if p["past_deadline"] else ""),
                   f"  reviews due: {s['reviews_due']} of {s['cards']} cards"]
+        sp = p["speed"]
+        if sp and sp["speed"] is not None:
+            lines.insert(-1, f"  speed {sp['speed']:.2f}× · {sp['lessons_per_day']:.2f} lessons/day, "
+                             f"needed {sp['needed_per_day']:.2f}" + (" (by the deadline)" if sp["basis"] == "deadline" else ""))
         if nxt:
             lines.append(f"  next: {nxt['id']} {nxt['title']}")
         if G.graph_mode(plan):
@@ -775,6 +809,13 @@ def cmd_status(args):
                 ready = ", ".join(t["ready"][:3]) or "—"
                 lines.append(f"  {t['id']} {t['title']}: {bar(t['done'], t['total'], 8)} {t['done']}/{t['total']} · ready: {ready}")
     emit(args, data, "\n".join(lines))
+
+
+def day_quota(plan, prog, today):
+    """(scheduled today?, lessons still to teach today)."""
+    scheduled = is_scheduled(plan, today) and today >= effective_start(plan, prog)
+    left = plan["pace"]["lessons_per_day"] - len(lesson_events_on(prog, today))
+    return scheduled, max(0, left) if scheduled else 0
 
 
 def cmd_today(args):
@@ -792,8 +833,7 @@ def cmd_today(args):
         done_today = len(lesson_events_on(prog, t))
         start = effective_start(plan, prog)
         started = t >= start
-        scheduled = is_scheduled(plan, t) and started
-        quota = max(0, lpd - done_today) if scheduled else 0
+        scheduled, quota = day_quota(plan, prog, t)
         pr = pace_report(plan, prog, t)
         try:
             todo = G.day_plan(plan, prog, quota, iso(t), args.track) if quota else []
@@ -873,8 +913,14 @@ def cmd_graph(args):
         print(json.dumps(model, ensure_ascii=False, indent=2))
         return
     if args.format in ("svg", "png"):
+        if not 1 <= args.scale <= 4:
+            raise LearnError("--scale must be between 1 and 4")
         out = Path(args.out) if args.out else st.plans_dir / slug / f"graph.{args.format}"
-        svg = G.render_svg(title, plan, prog, model, c["done"], c["total"])
+        _, quota = day_quota(plan, prog, st.today)
+        picks = [l["id"] for l in G.day_plan(plan, prog, quota, iso(st.today))] if args.level == "lessons" else []
+        svg = G.render_svg(title, plan, prog, model, c["done"], c["total"], today=iso(st.today), picks=picks,
+                           lang=st.cfg.get("language", "en"), scale=args.scale if args.format == "png" else 1,
+                           speed=speed_report(plan, prog, st.today))
         if args.format == "svg":
             write_text(out, svg)
         else:
@@ -1239,6 +1285,7 @@ def build_parser():
                    help="text (chat code block), md (rich Markdown table), mermaid (Obsidian), svg/png (image file)")
     p.add_argument("--level", choices=["lessons", "units"], default="lessons")
     p.add_argument("-o", "--out", help="output file for svg/png (default: plans/<slug>/graph.<ext>)")
+    p.add_argument("--scale", type=float, default=2, help="png: pixel density, 1..4 (default 2 — sharp on phones)")
 
     p = add("start", cmd_start, "set the plan's start date (default: today)")
     p.add_argument("--date", help="YYYY-MM-DD")

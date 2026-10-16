@@ -117,6 +117,30 @@ class TestDaily(Base):
         self.assertEqual(len(p["lessons"]), 2)
         self.assertIsNotNone(p["projected_finish"])
 
+    def test_speed_is_average_lessons_per_day_over_the_needed_average(self):
+        sp = lambda day: self.js("status", day=day)["plans"][0]["pace"]["speed"]  # noqa: E731
+        self.assertIsNone(sp("2026-10-04"))  # not started yet
+        self.assertIsNone(sp("2026-10-05"))  # first morning: no day to average over
+        self.run_cmd("done", "L01", "--score", "1", day="2026-10-05")
+        s = sp("2026-10-05")  # today counts once a lesson is done today
+        self.assertEqual((s["lessons_per_day"], s["needed_per_day"], s["basis"]), (1.0, 1.43, "pace"))  # 2 x 5/7
+        self.assertEqual(s["speed"], 0.7)
+        self.run_cmd("done", "L02", "--score", "1", day="2026-10-06")
+        self.run_cmd("done", "L03", "--score", "1", day="2026-10-06")
+        s = sp("2026-10-07")  # 3 lessons over Mon+Tue; Wednesday morning not counted yet
+        self.assertEqual((s["days"], s["lessons_per_day"], s["speed"]), (2, 1.5, 1.05))
+        self.assertIn("speed 1.05×", self.run_cmd("status", day="2026-10-07"))
+
+    def test_speed_with_a_deadline_uses_the_deadline(self):
+        plan = json.loads(json.dumps(PLAN))
+        plan["deadline"] = "2026-10-16"  # 6 lessons over 12 days: 0.5 a day needed
+        f = os.path.join(self.tmp.name, "p.json")
+        Path(f).write_text(json.dumps(plan))
+        self.run_cmd("create", "py", "--file", f, "--update")
+        self.run_cmd("done", "L01", "--score", "1", day="2026-10-05")
+        s = self.js("status", day="2026-10-06")["plans"][0]["pace"]["speed"]
+        self.assertEqual((s["needed_per_day"], s["basis"], s["lessons_per_day"], s["speed"]), (0.5, "deadline", 1.0, 2.0))
+
     def test_projected_finish_skips_rest_days(self):
         out = self.js("status", day="2026-10-05")["plans"][0]["pace"]
         # 6 lessons at 2/day: Mon, Tue, Wed
@@ -425,6 +449,72 @@ class TestGraphViews(GraphBase):
         text = "".join(root.itertext())
         for needle in ("P1", "A2", "J1", "Python", "AI career"):
             self.assertIn(needle, text)
+
+    def test_svg_lanes_today_ring_and_language(self):
+        import xml.etree.ElementTree as ET
+        out = os.path.join(self.tmp.name, "g.svg")
+        self.run_cmd("done", "P1", "--score", "1", day="2026-10-05")
+        self.run_cmd("config", "language", "en")
+        self.run_cmd("graph", "--format", "svg", "-o", out, day="2026-10-06")
+        root = ET.parse(out).getroot()
+        ns = "{http://www.w3.org/2000/svg}"
+        text = " ".join(t.text or "" for t in root.iter(ns + "text"))
+        self.assertIn("1/6 lessons done", text)
+        self.assertIn("Today: ", text)  # the day's picks are listed and ringed
+        self.assertTrue(any(c.get("stroke") == "#f9a825" for c in root.iter(ns + "circle")))
+        for title in ("Python", "AI basics", "Projects"):  # one lane per track, with its own progress
+            self.assertIn(title, text)
+        self.assertIn("1/3", text)
+        tips = [t.text for t in root.iter(ns + "title")]
+        self.assertIn("P1 — Functions (done)", tips)
+        self.assertIn("J1 — Chatbot script (locked)", tips)
+        self.assertEqual(root.get("width"), root.get("viewBox").split()[2])  # svg: natural size
+        self.assertIn("Speed 0.70×", text)  # 1 lesson in 1 day / (2 x 5/7) needed
+        self.run_cmd("config", "language", "ru")
+        self.run_cmd("graph", "--format", "svg", "-o", out, day="2026-10-06")
+        self.assertIn("Скорость 0,70×", Path(out).read_text())
+        self.assertIn("уроков пройдено", Path(out).read_text())
+        self.assertIn("Сегодня: ", Path(out).read_text())
+
+    def test_svg_every_branch_flows_into_the_goal(self):
+        import xml.etree.ElementTree as ET
+        import learn_graph as G
+        ns = "{http://www.w3.org/2000/svg}"
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        model = G.build_model(plan, {"lessons": {}, "events": []})
+        root = ET.fromstring(G.render_svg("t", plan, {"lessons": {}, "events": []}, model, lang="ru"))
+        tips = [t.text for t in root.iter(ns + "title")]
+        self.assertIn("Цель: Build an AI script", tips)
+        self.assertIn("0%", [t.text for t in root.iter(ns + "text")])
+        # sinks are P3 and J1 (P1, P2, A1, A2 all lead somewhere): one path each, ending at the goal's top
+        gx = float(root.get("viewBox").split()[2]) / 2
+        ends = [p.get("d").split()[-1] for p in root.iter(ns + "path") if p.get("fill") == "none"]
+        self.assertEqual(sum(1 for e in ends if float(e.split(",")[0]) == round(gx, 1)), 2)
+
+    def test_svg_lanes_never_share_a_cell_and_keep_prerequisites_above(self):
+        import learn_graph as G
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["units"][2]["lessons"].append(lesson("J2", "Second project", kind="junction", requires=["P2", "A2"]))
+        prog = {"lessons": {}, "events": []}
+        model = G.build_model(plan, prog)
+        cols, col, row, _ = G._layout(model)
+        self.assertEqual(cols[1], "PR")  # the junction lane sits between the tracks it joins
+        cells = [(col[n], row[n]) for n in col]
+        self.assertEqual(len(cells), len(set(cells)))
+        for a, b in model["edges"]:
+            self.assertLess(row[a], row[b])
+
+    def test_png_scale_is_checked(self):
+        self.assertIn("--scale", self.run_cmd("graph", "--format", "png", "--scale", "9", expect=1))
+
+    @unittest.skipUnless(__import__("shutil").which("rsvg-convert"), "needs rsvg-convert")
+    def test_png_is_rendered_at_the_requested_scale(self):
+        widths = []
+        for scale in ("1", "3"):
+            out = os.path.join(self.tmp.name, f"g{scale}.png")
+            self.run_cmd("graph", "--format", "png", "--scale", scale, "-o", out)
+            widths.append(int.from_bytes(Path(out).read_bytes()[16:20], "big"))
+        self.assertAlmostEqual(widths[1], 3 * widths[0], delta=3)
 
     def test_png_without_converter_explains(self):
         import shutil

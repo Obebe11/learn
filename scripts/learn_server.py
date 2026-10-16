@@ -22,6 +22,7 @@ Serve it behind a TLS reverse proxy (Caddy, nginx): see docs/remote-server.md.
 """
 
 import argparse
+import base64
 import hmac
 import json
 import os
@@ -45,6 +46,7 @@ PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 MAX_BODY = 1 << 20  # plans are small; anything bigger is a mistake or an attack
 CLI_TIMEOUT = 60
 MIN_TOKEN = 24
+MAX_IMAGE = 15 << 20
 
 INSTRUCTIONS = """\
 This server is the learner's long-term learning system (study plans, daily lessons, spaced-repetition reviews). \
@@ -53,7 +55,9 @@ All progress lives here, so any device continues where the last one stopped.
 Before running a session, call `learn_skill` with the method you need and follow it: \
 `daily-lesson` (study / continue / answered a reminder), `study-plan` (new goal, progress, change the plan), \
 `teach` (how to explain anything). Every learner-visible fact still has to be taught well — the tools only keep the score. \
-Nothing counts until it is recorded: `learn_done`, `learn_card_add`, `learn_review_grade`."""
+Nothing counts until it is recorded: `learn_done`, `learn_card_add`, `learn_review_grade`. \
+When the learner asks about progress or the map, show the picture from `learn_graph_image` next to the numbers from \
+`learn_status`."""
 
 ADAPTER = """\
 [Remote mode] You are connected to a remote `learn` server, not a shell. Read the skill below with these substitutions:
@@ -63,8 +67,9 @@ learn_review_grade); flags become arguments.
 - `profile.md` -> learn_profile_get / learn_profile_set. `config.json` -> learn_config_get / learn_config_set.
 - To create or revise a plan, pass the plan object itself to learn_create (update: true keeps progress). Read the current \
 plan with learn_show, edit it, send it back. There are no local files and no temp files.
-- Ignore references to files (`references/...`), image sending and `rsvg-convert`; use the text forms. Tools named \
-`quiz`, `ask_user_question`, `researcher` are optional: use their text fallbacks.
+- `learn graph --format png|svg` is the tool learn_graph_image: it returns the picture itself (show it to the learner) \
+and keeps a copy on the server. Ignore other references to files (`references/...`), `MEDIA:` tags and `rsvg-convert`. \
+Tools named `quiz`, `ask_user_question`, `researcher` are optional: use their text fallbacks.
 
 """
 
@@ -125,6 +130,7 @@ class Outcome:
     out: str = ""
     err: str = ""
     kind: str = "cli"  # "args" = the request was malformed, "cli" = learn refused it
+    media: list = field(default_factory=list)  # [(mime type, bytes)] sent as images next to the text
 
 
 @dataclass
@@ -212,6 +218,26 @@ def skill_tool(core, a):
     return Outcome(True, ADAPTER + skills[name][1])
 
 
+def graph_image(core, a):
+    """`learn graph --format png|svg`: learn.py draws and saves the file; we send its bytes back."""
+    fmt = a.get("format", "png")
+    argv = ["graph", f"--format={fmt}", f"--level={a.get('level', 'lessons')}"]
+    argv += [f"--plan={a['plan']}"] if "plan" in a else []
+    argv += [f"--scale={a['scale']}"] if "scale" in a else []
+    o = core.cli(argv)
+    if not o.ok:
+        return o
+    path = Path(o.out.strip().splitlines()[-1]).resolve()
+    if core.home.resolve() not in path.parents or not path.is_file() or path.stat().st_size > MAX_IMAGE:
+        return Outcome(False, err=f"learn did not produce a readable image ({o.out.strip()})")
+    data = path.read_bytes()
+    size = ""
+    if fmt == "png" and data[:8] == b"\x89PNG\r\n\x1a\n":
+        size = f" · {int.from_bytes(data[16:20], 'big')}×{int.from_bytes(data[20:24], 'big')} px"
+    mime = "image/png" if fmt == "png" else "image/svg+xml"
+    return Outcome(True, f"knowledge map saved on the server: {path}{size}", o.err, media=[(mime, data)])
+
+
 def load_skills():
     out = {}
     for path in sorted(SKILLS_DIR.glob("*/SKILL.md")):
@@ -234,7 +260,8 @@ TOOLS = [
          {"plan": PLAN, "track": TRACK, "max_reviews": {"type": "integer", "minimum": 0, "maximum": 50,
                                                          "description": "cap on warm-up reviews (default 6)"}},
          readonly=True, structured=True),
-    Tool("learn_status", "Progress per plan: bar, pace (behind/ahead), projected finish date, reviews due, next lesson.",
+    Tool("learn_status", "Progress per plan: bar, pace (behind/ahead), speed (average lessons/day so far divided by the "
+                         "average the plan needs; 1.0 = on schedule), projected finish date, reviews due, next lesson.",
          cli("status", opts=("plan",)), {"plan": PLAN}, readonly=True, structured=True),
     Tool("learn_plans", "List all plans with status and progress.",
          cli("plans"), readonly=True, structured=True),
@@ -247,6 +274,18 @@ TOOLS = [
                                    f"--level={a.get('level', 'lessons')}", *(["--json"] if a.get("json") else [])]),
          {"plan": PLAN, "view": {"type": "string", "enum": ["text", "md", "mermaid"]},
           "level": {"type": "string", "enum": ["lessons", "units"]}}, readonly=True, structured=True),
+    Tool("learn_graph_image",
+         "The knowledge map as a picture — show it whenever the learner asks about progress, the map or what is next. "
+         "One column per track with its progress bar; filled = done, ringed = ready now, orange = retry, pale = locked, "
+         "diamond = junction, gold ring = today's lessons; every branch flows into one final point, the plan's goal; "
+         "a badge shows the speed (actual vs needed lessons/day). Returns the PNG itself (2x, sharp on phones) and keeps a copy on "
+         "the server. format=svg returns the vector file (for clients that render SVG; also the fallback when the server "
+         "has no PNG converter).",
+         graph_image,
+         {"plan": PLAN, "level": {"type": "string", "enum": ["lessons", "units"]},
+          "format": {"type": "string", "enum": ["png", "svg"]},
+          "scale": {"type": "number", "minimum": 1, "maximum": 4, "description": "png pixel density (default 2)"}},
+         readonly=True),
     Tool("learn_week", "Last-7-days summary: lessons passed, average score, reviews recalled, active days.",
          cli("week"), readonly=True, structured=True),
     Tool("learn_show", "Print a plan: its JSON (to edit and send back via learn_create with update) or, with md, "
@@ -333,6 +372,14 @@ def rpc_error(mid, code, message):
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
 
+def media_block(mime, data):
+    if mime.startswith("image/") and mime != "image/svg+xml":
+        return {"type": "image", "data": base64.b64encode(data).decode("ascii"), "mimeType": mime}
+    # SVG is not an MCP image type most clients accept: send it as an embedded text resource
+    return {"type": "resource", "resource": {"uri": "learn://graph.svg", "mimeType": mime,
+                                             "text": data.decode("utf-8", "replace")}}
+
+
 class Core:
     def __init__(self, home):
         self.home = Path(home).expanduser()
@@ -415,7 +462,8 @@ class Core:
                 raise RpcError(-32602, f"unknown tool: {name}")
             o = self.call(name, params.get("arguments") or {})
             text = (o.out + ("\n\n" + o.err if o.err else "")) if o.ok else o.err
-            return {"content": [{"type": "text", "text": text or "(no output)"}], "isError": not o.ok}
+            content = [media_block(mime, data) for mime, data in o.media]
+            return {"content": content + [{"type": "text", "text": text or "(no output)"}], "isError": not o.ok}
         if method == "prompts/list":
             return {"prompts": [{"name": n, "description": d} for n, (d, _) in load_skills().items()]}
         if method == "prompts/get":
@@ -577,9 +625,15 @@ class Handler(BaseHTTPRequestHandler):
         o = core.call(tool.name, args)
         if not o.ok:
             return self._json(400 if o.kind == "args" else 422, {"ok": False, "error": o.err})
+        if raw and o.media:  # e.g. a bookmark that opens the map picture on the phone
+            mime, data = o.media[0]
+            return self._send(200, data, mime + ("; charset=utf-8" if mime == "image/svg+xml" else ""),
+                              {"X-Content-Type-Options": "nosniff", "Content-Security-Policy": "script-src 'none'"})
         if raw:
             return self._send(200, o.out.encode("utf-8"), "text/plain; charset=utf-8")
         resp = {"ok": True, "output": o.out}
+        if o.media:
+            resp["images"] = [{"mimeType": m, "data": base64.b64encode(d).decode("ascii")} for m, d in o.media]
         if o.err:
             resp["warnings"] = o.err
         if args.get("json"):

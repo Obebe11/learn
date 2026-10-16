@@ -20,7 +20,7 @@ Do NOT visualize when prose or a single equation already carries it. A decorativ
 
 ## Plan and skill maps: use `learn graph`, don't hand-draw
 
-For the learner's **study plan / knowledge map** (tracks, junctions, ready vs locked), never draw it yourself — the CLI knows the real state: `learn graph` (text for chat code blocks), `--format md` (rich Telegram table), `--format mermaid` (Obsidian/GitHub), `--format svg|png` (image file; PNG needs `rsvg-convert`/inkscape/ImageMagick-with-SVG), `--level units` for a one-line-per-track overview.
+For the learner's **study plan / knowledge map** (tracks, junctions, ready vs locked), never draw it yourself — the CLI knows the real state: `learn graph` (text for chat code blocks), `--format md` (rich Telegram table), `--format mermaid` (Obsidian/GitHub), `--format svg|png` (image file, PNG at 2x by default; needs `rsvg-convert`/inkscape/ImageMagick-with-SVG; remote server: `learn_graph_image`), `--level units` for a one-line-per-track overview.
 
 ## No makers here? Fallback ladder
 
