@@ -450,6 +450,21 @@ class TestGraphViews(GraphBase):
         self.assertIn("уроков пройдено", Path(out).read_text())
         self.assertIn("Сегодня: ", Path(out).read_text())
 
+    def test_svg_every_branch_flows_into_the_goal(self):
+        import xml.etree.ElementTree as ET
+        import learn_graph as G
+        ns = "{http://www.w3.org/2000/svg}"
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        model = G.build_model(plan, {"lessons": {}, "events": []})
+        root = ET.fromstring(G.render_svg("t", plan, {"lessons": {}, "events": []}, model, lang="ru"))
+        tips = [t.text for t in root.iter(ns + "title")]
+        self.assertIn("Цель: Build an AI script", tips)
+        self.assertIn("0%", [t.text for t in root.iter(ns + "text")])
+        # sinks are P3 and J1 (P1, P2, A1, A2 all lead somewhere): one path each, ending at the goal's top
+        gx = float(root.get("viewBox").split()[2]) / 2
+        ends = [p.get("d").split()[-1] for p in root.iter(ns + "path") if p.get("fill") == "none"]
+        self.assertEqual(sum(1 for e in ends if float(e.split(",")[0]) == round(gx, 1)), 2)
+
     def test_svg_lanes_never_share_a_cell_and_keep_prerequisites_above(self):
         import learn_graph as G
         plan = json.loads(json.dumps(GRAPH_PLAN))

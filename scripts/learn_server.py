@@ -276,7 +276,7 @@ TOOLS = [
     Tool("learn_graph_image",
          "The knowledge map as a picture — show it whenever the learner asks about progress, the map or what is next. "
          "One column per track with its progress bar; filled = done, ringed = ready now, orange = retry, pale = locked, "
-         "diamond = junction, gold ring = today's lessons. Returns the PNG itself (2x, sharp on phones) and keeps a copy on "
+         "diamond = junction, gold ring = today's lessons; every branch flows into one final point, the plan's goal. Returns the PNG itself (2x, sharp on phones) and keeps a copy on "
          "the server. format=svg returns the vector file (for clients that render SVG; also the fallback when the server "
          "has no PNG converter).",
          graph_image,

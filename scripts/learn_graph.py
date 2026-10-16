@@ -375,15 +375,23 @@ def render_mermaid(title, plan, prog, model, done=None, total=None):
 SVG_TEXT = {
     "en": {"done": "done", "available": "ready", "retry": "retry", "locked": "locked", "skipped": "skipped",
            "junction": "junction", "today": "today", "of": "lessons done", "ready_now": "ready now",
-           "retries": "to retry", "today_list": "Today", "ready_list": "Ready now", "finished": "All done 🎉"},
+           "retries": "to retry", "today_list": "Today", "ready_list": "Ready now", "finished": "All done 🎉",
+           "goal": "Goal"},
     "ru": {"done": "пройдено", "available": "готово", "retry": "пересдать", "locked": "закрыто",
            "skipped": "пропущено", "junction": "проект", "today": "сегодня", "of": "уроков пройдено",
            "ready_now": "готово сейчас", "retries": "пересдать", "today_list": "Сегодня",
-           "ready_list": "Готово сейчас", "finished": "Всё пройдено 🎉"},
+           "ready_list": "Готово сейчас", "finished": "Всё пройдено 🎉", "goal": "Цель"},
 }
 FONT = "'DejaVu Sans', 'Noto Sans', 'Segoe UI', Helvetica, Arial, sans-serif"
 INK, MUTED, FAINT, TODAY = "#263238", "#607d8b", "#b0bec5", "#f9a825"
 COL_W, ROW_H, NODE_R, TOP = 212, 62, 17, 162
+GOAL_R = 30
+GUTTER = 28  # lane-internal "bus" left of the nodes, for edges that pass nodes of their own lane
+
+
+def _to_gutter(x, y):
+    """Path start: leave a node from its bottom and swing into the lane's left gutter."""
+    return f"M{x:.1f},{y:.1f} C{x:.1f},{y + 14:.1f} {x - GUTTER:.1f},{y + 6:.1f} {x - GUTTER:.1f},{y + 28:.1f}"
 
 
 def _text_w(text, size, bold=False):
@@ -459,17 +467,13 @@ def _layout(model):
     return cols, col, row, preds
 
 
-def _ring_point(x, y, r, dx, dy):
-    """Point on a node's outline towards (dx, dy)."""
-    dist = (dx * dx + dy * dy) ** 0.5 or 1
-    return x + dx / dist * r, y + dy / dist * r
-
-
 def render_svg(title, plan, prog, model, done=None, total=None, today=None, picks=(), lang="en", scale=1):
-    """A swimlane map: one column per track, rows follow the prerequisites.
+    """A swimlane map: one column per track, rows follow the prerequisites, and every
+    branch flows into one final point — the plan's goal.
 
     Fill = status (track colour when done), outline = track, diamond = junction,
-    gold ring = today's lessons. `scale` multiplies the pixel size only (crisper PNG).
+    gold ring = today's lessons. All arrows into a node meet at its top.
+    `scale` multiplies the pixel size only (crisper PNG).
     """
     L = SVG_TEXT["ru" if str(lang).lower().startswith("ru") else "en"]
     nodes = {n["id"]: n for n in model["nodes"]}
@@ -482,7 +486,13 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     width = max(len(cols) * COL_W + 2 * margin, 640)
     left = (width - len(cols) * COL_W) / 2
     body_h = nrows * ROW_H
-    height = TOP + body_h + 74
+    lane_bottom = TOP + 14 + body_h
+    has_succ = {a for a, _ in model["edges"]}
+    sinks = [i for i in nodes if i not in has_succ]  # the ends of the branches: they all lead to the goal
+    goal_text = plan.get("goal") or title
+    gx, gy = width / 2, lane_bottom + 46 + GOAL_R
+    goal_lines = _wrap(f"{L['goal']}: {goal_text}", 13, min(width - 2 * margin, 520), 2, True)
+    height = gy + GOAL_R + 26 + 17 * len(goal_lines) + 52
 
     def color(unit):
         return TRACK_COLORS[tindex[unit] % len(TRACK_COLORS)]
@@ -576,18 +586,30 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             if seq.index(b) - seq.index(a) == 1:  # neighbours in the lane: a straight line
                 edges_out.append(f'<line x1="{x1:.1f}" y1="{y1 + radius(a) + 2:.1f}" x2="{x2:.1f}" '
                                  f'y2="{y2 - radius(b) - 3:.1f}" {style}/>')
-            else:  # skips nodes of its own lane: bend through the left gutter
-                sx, sy = _ring_point(x1, y1, radius(a) + 2, -1, 1)
-                ex, ey = _ring_point(x2, y2, radius(b) + 3, -1, -1)
-                edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} C{x1 - 34:.1f},{sy + 30:.1f} {x2 - 34:.1f},{ey - 30:.1f} '
-                                 f'{ex:.1f},{ey:.1f}" {style}/>')
+            else:  # skips nodes of its own lane: down the left gutter, back in from the top
+                sy, ey = y1 + radius(a) + 2, y2 - radius(b) - 3
+                edges_out.append(f'<path d="{_to_gutter(x1, sy)} L{x1 - GUTTER:.1f},{ey - 28:.1f} '
+                                 f'C{x1 - GUTTER:.1f},{ey - 6:.1f} {x2:.1f},{ey - 14:.1f} {x2:.1f},{ey:.1f}" {style}/>')
             continue
-        side = 1 if col[b] > col[a] else -1
-        sx, sy = _ring_point(x1, y1, radius(a) + 2, side, 1.2)
-        ex, ey = _ring_point(x2, y2, radius(b) + 3, -side, -1.2)
-        bend = max(28.0, (ey - sy) * 0.5)
+        sx, sy, ex, ey = x1, y1 + radius(a) + 2, x2, y2 - radius(b) - 3
+        bend = min(max(28.0, (ey - sy) * 0.5), ROW_H * 1.2)
         edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} C{sx:.1f},{sy + bend:.1f} {ex:.1f},{ey - bend:.1f} '
                          f'{ex:.1f},{ey:.1f}" {style}/>')
+    # every branch ends in the goal: down its own lane (through the left gutter when the lane goes on), then in
+    for a in sinks:
+        x1, y1 = xy(a)
+        walked = nodes[a]["status"] in SATISFIED
+        mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS)
+        style = (f'fill="none" stroke="{TRACK_COLORS[mi]}" stroke-width="1.6" stroke-opacity="{0.9 if walked else 0.45}" '
+                 f'marker-end="url(#ar{mi})"')
+        sy = y1 + radius(a) + 2
+        if in_col[col[a]][-1] == a:
+            lane = f"M{x1:.1f},{sy:.1f} L{x1:.1f},{lane_bottom - 6:.1f}"
+        else:
+            lane = f"{_to_gutter(x1, sy)} L{x1 - GUTTER:.1f},{lane_bottom - 6:.1f}"
+            x1 -= GUTTER
+        edges_out.append(f'<path d="{lane} C{x1:.1f},{lane_bottom + 24:.1f} {gx:.1f},{gy - GOAL_R - 36:.1f} '
+                         f'{gx:.1f},{gy - GOAL_R - 3:.1f}" {style}/>')
     out += edges_out
 
     # --- nodes ---
@@ -627,8 +649,21 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         g.append("</g>")
         out.append("".join(g))
 
+    # --- the goal: where every branch meets ---
+    finished = bool(total) and done == total
+    ring = "#2e7d32" if finished else INK
+    out.append(f'<g><title>{esc(L["goal"])}: {esc(goal_text)}</title>'
+               f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="{GOAL_R + 7}" fill="{ring}" fill-opacity="0.08"/>'
+               f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="{GOAL_R}" fill="{"#43a047" if finished else "#ffffff"}" '
+               f'stroke="{ring}" stroke-width="3.5"/>'
+               f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="{GOAL_R - 6}" fill="none" stroke="{ring}" stroke-opacity="0.25" '
+               f'stroke-width="1.5"/>'
+               + text(gx, gy + 5, f"{pct}%", 14, "#ffffff" if finished else INK, "bold", "middle") + "</g>")
+    for k, line in enumerate(goal_lines):
+        out.append(text(gx, gy + GOAL_R + 24 + k * 17, line, 13, INK, "bold", "middle"))
+
     # --- legend ---
-    ly = TOP + 22 + body_h + 34
+    ly = gy + GOAL_R + 24 + 17 * len(goal_lines) + 22
     lx = margin
     swatch = [("done", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{TRACK_COLORS[0]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
               ("available", f'<circle cx="{{x}}" cy="{ly}" r="10" fill="{TRACK_COLORS[0]}" fill-opacity="0.16"/>'
