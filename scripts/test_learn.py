@@ -527,6 +527,110 @@ class TestGraphViews(GraphBase):
         self.assertIn("no working SVG", msg)
         self.assertTrue(os.path.exists(os.path.join(self.tmp.name, "g.svg")))
 
+    def run_png(self, *argv, converter=None):
+        """`learn graph --format png` with a fake converter: (stdout, stderr, svg root, converter calls)."""
+        import xml.etree.ElementTree as ET
+        import learn_graph as G
+        calls, real = [], G.svg_to_png
+
+        def fake(svg, png):
+            calls.append(svg)
+            Path(png).write_bytes(converter(svg) if converter else b"\x89PNG fake")
+            return "fake"
+        G.svg_to_png = fake
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with redirect_stdout(out), redirect_stderr(err):
+                code = learn.main(["--home", self.home, "graph", "--format", "png", *argv])
+        finally:
+            G.svg_to_png = real
+        self.assertEqual(code, 0, err.getvalue())
+        svg = Path(out.getvalue().strip()).with_suffix(".svg")
+        return out.getvalue(), err.getvalue(), ET.parse(svg).getroot(), calls
+
+    def big_plan(self, tracks=21, per=12):
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["units"] = [{"id": f"T{u}", "title": f"Track number {u}", "lessons": [
+            lesson(f"T{u}L{i}", f"Topic {i} of track {u}", **({"requires": [f"T{u - 1}L3"]} if u and not i else {}))
+            for i in range(per)]} for u in range(tracks)]
+        Path(self.gfile).write_text(json.dumps(plan))
+        self.run_cmd("create", "ai", "--file", self.gfile, "--update")
+
+    def assert_phone_sized(self, root):
+        ns = "{http://www.w3.org/2000/svg}"
+        px = float(root.get("width")) / float(root.get("viewBox").split()[2])
+        self.assertLessEqual(float(root.get("width")), 1400)
+        smallest = min(float(t.get("font-size")) for t in root.iter(ns + "text"))
+        self.assertGreaterEqual(smallest * px, 14)
+
+    def test_png_of_a_wide_plan_fits_a_phone_as_one_point_per_track(self):
+        self.big_plan()
+        _, err, root, calls = self.run_png()
+        self.assertIn("21 tracks are too wide for a phone", err)
+        self.assertIn("png: fake", err)  # the converter is named
+        self.assert_phone_sized(root)
+        tips = [t.text for t in root.iter("{http://www.w3.org/2000/svg}title")]
+        self.assertIn("T5 — Track number 5 (закрыто)", tips)
+        self.assertFalse(any(t.startswith("T5L1 ") for t in tips))
+        _, _, full, _ = self.run_png("--full")  # every lesson, natural size
+        self.assertGreater(float(full.get("width")), 4000)
+        self.assertTrue(any(t.text.startswith("T5L1 ") for t in full.iter("{http://www.w3.org/2000/svg}title")))
+
+    def test_png_of_one_track_shows_its_lessons_readably(self):
+        self.big_plan()
+        _, err, root, _ = self.run_png("--track", "T3")
+        self.assertNotIn("too wide", err)
+        self.assert_phone_sized(root)
+        tips = [t.text for t in root.iter("{http://www.w3.org/2000/svg}title")]
+        self.assertTrue(any(t.startswith("T3L11 ") for t in tips))
+        self.assertFalse(any(t.startswith("T4L") for t in tips))
+        self.assertIn("Track number 3", self.run_cmd("graph", "--track", "T3"))
+        self.assertIn("no such track: ZZ", self.run_cmd("graph", "--track", "ZZ", expect=1))
+
+    def test_small_plan_png_keeps_its_lanes_at_phone_size(self):
+        _, err, root, _ = self.run_png()
+        self.assertNotIn("too wide", err)
+        self.assert_phone_sized(root)
+        self.assertIn("Python", " ".join(t.text or "" for t in root.iter("{http://www.w3.org/2000/svg}text")))
+
+    def test_png_is_cached_until_the_map_changes(self):
+        self.run_png()
+        _, err, _, calls = self.run_png()
+        self.assertEqual(calls, [])
+        self.assertIn("cached", err)
+        self.run_cmd("done", "P2", "--score", "1")
+        _, err, _, calls = self.run_png()
+        self.assertEqual(len(calls), 1)
+
+    def test_heavy_png_is_rendered_smaller(self):
+        def heavy(svg):  # pretend anything wider than 1100 px is over the 1 MB budget
+            width = float(Path(svg).read_text().split('width="', 1)[1].split('"', 1)[0])
+            return b"x" * (2_000_000 if width > 1100 else 1000)
+        _, err, root, calls = self.run_png(converter=heavy)
+        self.assertEqual(len(calls), 2)
+        self.assertLessEqual(float(root.get("width")), 1100)
+
+    def test_svg_to_png_takes_the_first_installed_converter(self):
+        import shutil
+        import learn_graph as G
+        real_which, real_run, used = shutil.which, G.subprocess.run, []
+
+        def run(cmd, **_):
+            used.append(cmd[0])
+            Path(cmd[-1] if cmd[0] != "rsvg-convert" else cmd[2]).write_bytes(b"png")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        png = os.path.join(self.tmp.name, "g.png")
+        try:
+            G.subprocess.run = run
+            shutil.which = lambda exe: exe if exe in ("magick", "convert") else None
+            self.assertEqual(G.svg_to_png("g.svg", png), "magick")
+            shutil.which = lambda exe: exe if exe in ("rsvg-convert", "convert") else None
+            self.assertEqual(G.svg_to_png("g.svg", png), "rsvg-convert")
+        finally:
+            shutil.which, G.subprocess.run = real_which, real_run
+        self.assertEqual(used, ["magick", "rsvg-convert"])
+        self.assertEqual(Path(png).read_bytes(), b"png")
+
     def test_long_track_collapses(self):
         plan = json.loads(json.dumps(GRAPH_PLAN))
         plan["units"][0]["lessons"] = [lesson(f"P{i}", f"L{i}") for i in range(1, 21)]
