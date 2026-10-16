@@ -283,7 +283,7 @@ TOOLS = [
          "All lessons and prerequisites; wide plans use a compact graph with a coloured track key. "
          "Fill: green = done, yellow = available, orange = retry, grey = locked; outline and arrows = track colour. "
          "Circle = lesson, diamond = several prerequisites converge, gold ring = today's lessons; "
-         "every branch flows into one final point, the plan's goal; "
+         "branches bend towards joins, compact dependency levels close empty gaps; the plan's goal is below the graph; "
          "a badge shows the speed (actual vs needed lessons/day). Returns the PNG itself, sized for a phone (at most 1400 px "
          "wide, labels readable). level=units explicitly requests one point per track; track=<id> shows one track "
          "in detail. Keeps a copy on the server and re-uses it while the map is unchanged. format=svg returns the vector file (for clients that render SVG; also the fallback when the server "

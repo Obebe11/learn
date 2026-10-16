@@ -537,47 +537,70 @@ def _layout(model):
 
 
 def _compact_layout(model):
-    """Pack lessons into a bounded number of columns, keeping prerequisites above them.
+    """Pack each dependency level separately, letting branches bend towards joins.
 
-    A column can be reused by a later track. Prefer a track's previous column;
-    junctions sit near the prerequisites they join. Overflow moves down, never
-    hides lessons or changes the model into a track summary.
+    Rows hold at most COMPACT_COLS lessons. Barycentric sweeps order neighbours
+    and move each row's compact block towards its prerequisites and successors;
+    x positions are continuous, not permanent track columns.
     """
     nodes = {n["id"]: n for n in model["nodes"]}
-    preds = defaultdict(list)
+    preds, succ = defaultdict(list), defaultdict(list)
     for a, b in model["edges"]:
         preds[b].append(a)
+        succ[a].append(b)
     depth = _depths(list(nodes), preds)
     layers = defaultdict(list)
-    for nid in nodes:
-        layers[depth[nid]].append(nid)
-    ncols = min(COMPACT_COLS, max(map(len, layers.values()), default=1))
-    col, row, previous, occupied = {}, {}, {}, defaultdict(set)
+    index = {n: i for i, n in enumerate(nodes)}
+    row = {}
+    for nid in sorted(nodes, key=lambda n: (depth[n], index[n])):
+        r = max([row[p] + 1 for p in preds[nid]] + [depth[nid]])
+        while len(layers[r]) == COMPACT_COLS:
+            r += 1
+        row[nid] = r
+        layers[r].append(nid)
+    ncols = max(map(len, layers.values()), default=1)
+    col = {n: (ncols - len(ids)) / 2 + i for ids in layers.values() for i, n in enumerate(ids)}
 
-    def aim(nid):
-        unit = nodes[nid]["unit"]
-        near = [col[p] for p in preds[nid] if p in col]
-        if nodes[nid]["kind"] != "junction" and len(preds[nid]) < 2 and unit in previous:
-            return previous[unit]
-        return sum(near) / len(near) if near else len(previous) % ncols
+    def pack(r, neighbours, reorder=False):
+        ids = layers[r]
+        aims = {n: sum(col[p] for p in neighbours[n]) / len(neighbours[n]) if neighbours[n] else col[n]
+                for n in ids}
+        if r and reorder:  # preserve the plan's root order, as in the reference map
+            ids.sort(key=lambda n: (aims[n], col[n], index[n]))
+        # A row shrinks when branches end, instead of leaving holes in fixed lanes.
+        half = (len(ids) - 1) / 2
+        centre = max(half, min(ncols - 1 - half, sum(aims.values()) / len(ids)))
+        for i, n in enumerate(ids):
+            col[n] = centre + i - half
 
-    for d in sorted(layers):
-        for nid in sorted(layers[d], key=aim):  # stable: plan order breaks ties
-            target = aim(nid)
-            r = max([row[p] + 1 for p in preds[nid]] + [d])
-            while len(occupied[r]) == ncols:
-                r += 1
-            c = min((c for c in range(ncols) if c not in occupied[r]), key=lambda c: (abs(c - target), c))
-            col[nid], row[nid] = c, r
-            occupied[r].add(c)
-            previous[nodes[nid]["unit"]] = c
+    for r in sorted(layers):
+        pack(r, preds, reorder=True)
+    # Relax whole row blocks without swapping established branch order. A late
+    # cross-track requirement must not make two otherwise parallel chains cross.
+    for _ in range(3):
+        for r in sorted(layers):
+            pack(r, preds)
+        for r in sorted(layers, reverse=True):
+            pack(r, succ)
+    for r in sorted(layers):
+        pack(r, preds)
     return list(range(ncols)), col, row, preds
+
+
+def _smooth_path(points):
+    """Monotone vertical Beziers through routing points, without right-angle elbows."""
+    x, y = points[0]
+    parts = [f"M{x:.1f},{y:.1f}"]
+    for (x1, y1), (x2, y2) in zip(points, points[1:]):
+        bend = (y2 - y1) * 0.45
+        parts.append(f"C{x1:.1f},{y1 + bend:.1f} {x2:.1f},{y2 - bend:.1f} {x2:.1f},{y2:.1f}")
+    return " ".join(parts)
 
 
 def render_svg(title, plan, prog, model, done=None, total=None, today=None, picks=(), lang="en", scale=1, speed=None,
                max_px=None):
     """A lesson map: narrow plans have track lanes, wide plans a compact DAG.
-    Rows follow the prerequisites; every branch flows into the plan's goal.
+    Rows follow the prerequisites; the goal summary sits below the graph.
 
     Fill = status (green/yellow/orange/grey), outline = track, diamond = convergence,
     gold ring = today's lessons. All arrows into a node meet at its top. `speed` (learn.speed_report)
@@ -607,7 +630,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
 
     def xy(nid):
         return (left + col[nid] * col_w + (col_w / 2 if compact else 34),
-                top + 22 + row[nid] * row_h + row_h / 2)
+                top + layer_y[row[nid]] if compact else top + 22 + row[nid] * row_h + row_h / 2)
 
     def id_size(nid):
         return 10.5 if len(nodes[nid]["short"]) > 3 else 11.5
@@ -621,9 +644,16 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         inner = _text_w(nodes[nid]["short"], id_size(nid), True) / 2 + 5
         return max(base, round(inner * (1.45 if junction(nid) else 1), 1))
 
+    layer_nodes = defaultdict(list)
+    for n in nodes:
+        layer_nodes[row[n]].append(n)
+    layer_y, layer_r, cursor = {}, {}, 0
     if compact:
-        row_h = max(94, 2 * max((radius(n) for n in nodes), default=NODE_R) + 52)
-    body_h = nrows * row_h
+        for r in sorted(layer_nodes):
+            layer_r[r] = max(radius(n) for n in layer_nodes[r])
+            layer_y[r] = cursor + layer_r[r] + 8
+            cursor = layer_y[r] + layer_r[r] + 34
+    body_h = cursor if compact else nrows * row_h
 
     def esc(t):
         return xml.escape(str(t))
@@ -740,6 +770,30 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     in_col = defaultdict(list)
     for nid in sorted(nodes, key=lambda i: row[i]):
         in_col[col[nid]].append(nid)
+
+    def flow_path(a, b):
+        (x1, y1), (x2, y2) = xy(a), xy(b)
+        points = [(x1, y1 + radius(a) + 2)]
+        for r in range(row[a] + 1, row[b]):
+            if r not in layer_nodes:
+                continue
+            cy = top + layer_y[r]
+            target = x1 + (x2 - x1) * (cy - y1) / (y2 - y1)
+            boxes = [(xy(n)[0], max(radius(n) + 9, col_w / 2 - 8)) for n in layer_nodes[r]]
+            # Follow the direct connection unless an intermediate lesson blocks it.
+            candidates = [target, left, width - left]
+            candidates += [x + side * (half + 3) for x, half in boxes for side in (-1, 1)]
+            free = [x for x in candidates if margin <= x <= width - margin
+                    and all(abs(x - centre) >= half + 2 for centre, half in boxes)]
+            x = min(free, key=lambda x: (abs(x - target) + 0.15 * abs(x - points[-1][0]), x))
+            points.extend([(x, cy - layer_r[r] - 8), (x, cy + layer_r[r] + 20)])
+        points.append((x2, y2 - radius(b) - 3))
+        if abs(points[1][0] - x1) >= col_w * 0.9:
+            # A wide sideways move clears the source row's captions first.
+            # Short connections keep the direct diagonal curve of the reference.
+            points.insert(1, (x1, y1 + layer_r[row[a]] + 20))
+        return _smooth_path(points)
+
     edges_out = []
     for a, b in model["edges"]:
         (x1, y1), (x2, y2) = xy(a), xy(b)
@@ -773,14 +827,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             continue
         sx, sy, ex, ey = x1, y1 + radius(a) + 2, x2, y2 - radius(b) - 3
         if compact:
-            # Travel between columns and above the target row, clear of unrelated nodes and labels.
-            gutter = sx + (col_w / 2 - 4) * (1 if ex > sx else -1)
-            if col[a] == col[b] and in_col[col[a]].index(b) - in_col[col[a]].index(a) == 1:
-                edges_out.append(f'<line x1="{sx:.1f}" y1="{sy:.1f}" x2="{ex:.1f}" y2="{ey:.1f}" {style}/>')
-            else:
-                rail = y2 - row_h / 2 + 3
-                edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} L{gutter:.1f},{sy:.1f} L{gutter:.1f},{rail:.1f} '
-                                 f'L{ex:.1f},{rail:.1f} L{ex:.1f},{ey:.1f}" stroke-linejoin="round" {style}/>')
+            edges_out.append(f'<path d="{flow_path(a, b)}" {style}/>')
         else:
             bend = min(max(28.0, (ey - sy) * 0.5), ROW_H * 1.2)
             edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} C{sx:.1f},{sy + bend:.1f} {ex:.1f},{ey - bend:.1f} '
@@ -793,11 +840,18 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         style = (f'fill="none" stroke="{TRACK_COLORS[mi]}" stroke-width="1.6" stroke-opacity="{0.9 if walked else 0.45}" '
                  f'marker-end="url(#ar{mi})"')
         sy = y1 + radius(a) + 2
-        if (not lanes and not compact) or in_col[col[a]][-1] == a:
+        if compact:
+            # Earlier leaves end naturally. Only the bottom frontier joins the goal summary;
+            # artificial full-height rails would turn the map back into straight columns.
+            if row[a] == nrows - 1:
+                path = _smooth_path([(x1, sy), (gx, gy - GOAL_R - 3)])
+                edges_out.append(f'<path d="{path}" {style}/>')
+            continue
+        if not lanes or in_col[col[a]][-1] == a:
             lane = f"M{x1:.1f},{sy:.1f} L{x1:.1f},{lane_bottom - 6:.1f}"
         else:
-            gutter = col_w / 2 - 4 if compact else GUTTER
-            lane = (f"M{x1:.1f},{sy:.1f} L{x1 - gutter:.1f},{sy:.1f}" if compact else _to_gutter(x1, sy))
+            gutter = GUTTER
+            lane = _to_gutter(x1, sy)
             lane += f" L{x1 - gutter:.1f},{lane_bottom - 6:.1f}"
             x1 -= gutter
         edges_out.append(f'<path d="{lane} C{x1:.1f},{lane_bottom + 24:.1f} {gx:.1f},{gy - GOAL_R - 36:.1f} '
@@ -835,8 +889,8 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         lab = n["label"]
         size = 10 if compact else 11.5
         lines = _wrap(lab, size, col_w - 16 if compact else col_w - 52 - r - (4 if nid in picks else 0),
-                      2, weight == "bold")
-        ty = y + r + 16 if compact else y + 4 - (len(lines) - 1) * 7
+                      1 if compact else 2, weight == "bold")
+        ty = y + r + 14 if compact else y + 4 - (len(lines) - 1) * 7
         for k, line in enumerate(lines):
             g.append(text(x if compact else x + r + (14 if nid in picks else 10), ty + k * 14, line, size, labc,
                           weight, anchor="middle" if compact else "start", halo=True,

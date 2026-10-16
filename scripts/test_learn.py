@@ -612,6 +612,78 @@ class TestGraphViews(GraphBase):
         self.assertIn("T0 — Track number 0 (готово)", tips)
         self.assertFalse(any(t.startswith("T0L0 — ") for t in tips))
 
+    def test_flowing_map_compacts_each_level_and_places_a_join_between_its_parents(self):
+        import learn_graph as G
+        plan = {"units": [{"id": f"T{u}", "title": f"Track {u}", "lessons": [
+            lesson(f"T{u}L{i}", "Example topic") for i in range(length)]}
+            for u, length in enumerate([8, 2, 6, 3, 1, 4])], "graph": True}
+        plan["units"].append({"id": "J", "title": "Join", "lessons": [
+            lesson("J0", "Combine skills", kind="junction", requires=["T0L7", "T2L5"])]})
+        model = G.build_model(plan, {"lessons": {}, "events": []})
+        _, x, row, _ = G._compact_layout(model)
+        for r in set(row.values()):
+            xs = sorted(x[n] for n in x if row[n] == r)
+            # An ended branch leaves no empty slot between the remaining lessons.
+            for a, b in zip(xs, xs[1:]):
+                self.assertAlmostEqual(b - a, 1)
+        trunk = [x[f"T0L{i}"] for i in range(8)]
+        self.assertGreater(max(trunk) - min(trunk), 0.5)
+        self.assertAlmostEqual(x["J0"], (x["T0L7"] + x["T2L5"]) / 2)
+        # Parallel chains retain their left-to-right order while they bend.
+        for i in range(6):
+            self.assertLess(x[f"T0L{i}"], x[f"T2L{i}"])
+
+    def test_flowing_edges_are_curved_clear_other_nodes_and_do_not_extend_early_leaves(self):
+        import re
+        import xml.etree.ElementTree as ET
+        import learn_graph as G
+        plan = {"units": [{"id": f"T{u}", "title": f"Track {u}", "lessons": [
+            lesson(f"T{u}L{i}", "Example topic") for i in range(length)]}
+            for u, length in enumerate([8, 2, 6, 3, 1, 4])], "graph": True}
+        plan["units"].append({"id": "J", "title": "Join", "lessons": [
+            lesson("J0", "Combine skills", kind="junction", requires=["T0L0", "T2L5"])]})
+        plan["units"][5]["lessons"][1]["requires"] = ["T0L0"]  # a wide move past other root captions
+        model = G.build_model(plan, {"lessons": {}, "events": []})
+        root = ET.fromstring(G.render_svg("Example", plan, {}, model))
+        ns = "{http://www.w3.org/2000/svg}"
+        shapes, captions = {}, {}
+        for group in root.iter(ns + "g"):
+            title = group.findtext(ns + "title") or ""
+            if " — " not in title:
+                continue
+            nid = title.split(" — ")[0]
+            shape = next(s for s in group if s.get("stroke-width") == "3")
+            if shape.tag == ns + "circle":
+                shapes[nid] = (float(shape.get("cx")), float(shape.get("cy")), float(shape.get("r")))
+            else:
+                points = [tuple(map(float, p.split(","))) for p in shape.get("points").split()]
+                x, y = sum(p[0] for p in points) / 4, sum(p[1] for p in points) / 4
+                shapes[nid] = (x, y, max(p[0] for p in points) - x)
+            label = list(group.iter(ns + "text"))[-1]
+            w = G._text_w(label.text or "", float(label.get("font-size")), label.get("font-weight") == "bold")
+            captions[nid] = (float(label.get("x")) - w / 2, float(label.get("y")) - 9, w, 12)
+        paths = [p for p in root.iter(ns + "path") if p.get("marker-end")]
+        _, _, row, _ = G._compact_layout(model)
+        self.assertEqual(len(paths), len(model["edges"]) + sum(r == max(row.values()) for r in row.values()))
+        for path, (a, b) in zip(paths, model["edges"]):
+            d = path.get("d")
+            self.assertIn("C", d)
+            self.assertNotIn("L", d)
+            points = [tuple(map(float, p.split(","))) for p in re.findall(r"-?\d+\.\d+,-?\d+\.\d+", d)]
+            for k in range(1, len(points), 3):
+                p0, p1, p2, p3 = points[k - 1:k + 3]
+                self.assertTrue(p0[1] <= p1[1] <= p2[1] <= p3[1])
+                for step in range(21):
+                    t = step / 20
+                    x, y = [sum(w * p[axis] for w, p in zip(
+                        ((1-t)**3, 3*(1-t)**2*t, 3*(1-t)*t*t, t**3), (p0, p1, p2, p3))) for axis in (0, 1)]
+                    for n, (cx, cy, r) in shapes.items():
+                        if n not in (a, b):
+                            self.assertGreater((x - cx)**2 + (y - cy)**2, r*r, (a, b, n))
+                    for n, (lx, ly, w, h) in captions.items():
+                        if n not in (a, b):
+                            self.assertFalse(lx - 1 < x < lx + w + 1 and ly - 1 < y < ly + h + 1, (a, b, n))
+
     def test_node_fill_is_status_outline_is_track_and_convergence_is_a_diamond(self):
         import xml.etree.ElementTree as ET
         import learn_graph as G
