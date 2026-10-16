@@ -15,7 +15,7 @@ All state lives in plain files managed by `learn` (stdlib Python; data dir `$LEA
 learn init --language ru --timezone Europe/Moscow     # once
 learn plans | status | week
 learn create <slug> --file plan.json  [--update]      # validates, renders PLAN.md
-learn graph [--format text|md|mermaid|svg|png] [--level lessons|units] [--scale 1..4]   # the knowledge map; png = a picture to send
+learn graph [--format text|md|mermaid|svg|png] [--level lessons|units] [--track ID] [--full]   # the knowledge map; png = a phone-sized picture (5+ tracks: one point per track; --track ID: one track in detail)
 learn start [--date YYYY-MM-DD]                       # change the plan's start date (default: today)
 learn pause|resume|archive <slug>
 learn sync                                           # git-sync the data dir across devices

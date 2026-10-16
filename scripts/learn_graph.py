@@ -208,7 +208,20 @@ def track_summary(plan, prog):
 # model for renderers
 # ----------------------------------------------------------------------------
 
-def build_model(plan, prog, level="lessons"):
+def build_model(plan, prog, level="lessons", track=None):
+    """Nodes, edges and per-track progress; `track` keeps one track only (its inner edges)."""
+    model = _build_model(plan, prog, level)
+    if track is None:
+        return model
+    if track not in {t["id"] for t in model["tracks"]}:
+        raise KeyError(f"no such track: {track} (have: {', '.join(t['id'] for t in model['tracks'])})")
+    keep = {n["id"] for n in model["nodes"] if n["unit"] == track}
+    return dict(model, nodes=[n for n in model["nodes"] if n["id"] in keep],
+                edges=[(a, b) for a, b in model["edges"] if a in keep and b in keep],
+                tracks=[t for t in model["tracks"] if t["id"] == track], track=track)
+
+
+def _build_model(plan, prog, level):
     reqs, sat, units = requires_map(plan), satisfied_ids(plan, prog), unit_of(plan)
     tracks = track_summary(plan, prog)
     utitle = {u["id"]: u["title"] for u in plan["units"]}
@@ -386,6 +399,8 @@ SVG_TEXT = {
 FONT = "'DejaVu Sans', 'Noto Sans', 'Segoe UI', Helvetica, Arial, sans-serif"
 INK, MUTED, FAINT, TODAY = "#263238", "#607d8b", "#b0bec5", "#f9a825"
 COL_W, ROW_H, NODE_R, TOP = 212, 62, 17, 162
+UNIT_COLS = 4  # units map: a grid this many points wide, whatever the number of tracks
+PHONE_PX, PHONE_COLS, MIN_FONT = 1400, 4, 10  # PNG for a phone: width cap; lanes that still fit; smallest font used
 GOAL_R = 30
 GUTTER = 28  # lane-internal "bus" left of the nodes, for edges that pass nodes of their own lane
 
@@ -459,6 +474,13 @@ def _layout(model):
     for n in nodes:
         d(n)
     index = {n["id"]: i for i, n in enumerate(model["nodes"])}
+    if model["level"] == "units":  # no lanes: rows follow the prerequisites, wrapped UNIT_COLS wide
+        col, row, r, c, prev = {}, {}, -1, 0, None
+        for n in sorted(nodes, key=lambda i: (depth[i], index[i])):
+            if depth[n] != prev or c == UNIT_COLS:
+                r, c, prev = r + 1, 0, depth[n]
+            col[n], row[n], c = c, r, c + 1
+        return list(range(min(UNIT_COLS, len(nodes)))), col, row, preds
     cols = _column_order(model["tracks"], model["edges"], {i: n["unit"] for i, n in nodes.items()})
     col = {n: cols.index(nodes[n]["unit"]) for n in nodes}
     row, last = {}, defaultdict(lambda: -1)
@@ -468,14 +490,21 @@ def _layout(model):
     return cols, col, row, preds
 
 
-def render_svg(title, plan, prog, model, done=None, total=None, today=None, picks=(), lang="en", scale=1, speed=None):
+def phone_fit(model):
+    """Can this map be drawn at most PHONE_PX wide with every label at least 14 px?"""
+    return model["level"] == "units" or len(model["tracks"]) <= PHONE_COLS
+
+
+def render_svg(title, plan, prog, model, done=None, total=None, today=None, picks=(), lang="en", scale=1, speed=None,
+               max_px=None):
     """A swimlane map: one column per track, rows follow the prerequisites, and every
     branch flows into one final point — the plan's goal.
 
     Fill = status (track colour when done), outline = track, diamond = junction,
     gold ring = today's lessons. All arrows into a node meet at its top. `speed` (learn.speed_report)
     adds a badge: green at or above the needed pace, orange from 0.8, red below.
-    `scale` multiplies the pixel size only (crisper PNG).
+    `scale` multiplies the pixel size only (crisper PNG); `max_px` caps the pixel width (lowers the scale).
+    The units level has no lanes: one point per track, laid out as a grid.
     """
     L = SVG_TEXT["ru" if str(lang).lower().startswith("ru") else "en"]
     nodes = {n["id"]: n for n in model["nodes"]}
@@ -485,10 +514,14 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     picks = [p for p in picks if p in nodes]
     nrows = max(row.values(), default=0) + 1
     margin = 20
+    lanes = model["level"] != "units"
+    top = TOP if lanes else TOP - 40  # no lane headers to make room for
     width = max(len(cols) * COL_W + 2 * margin, 640)
+    if max_px:
+        scale = min(scale, max_px / width)
     left = (width - len(cols) * COL_W) / 2
     body_h = nrows * ROW_H
-    lane_bottom = TOP + 14 + body_h
+    lane_bottom = top + 14 + body_h
     has_succ = {a for a, _ in model["edges"]}
     sinks = [i for i in nodes if i not in has_succ]  # the ends of the branches: they all lead to the goal
     goal_text = plan.get("goal") or title
@@ -500,7 +533,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         return TRACK_COLORS[tindex[unit] % len(TRACK_COLORS)]
 
     def xy(nid):
-        return left + col[nid] * COL_W + 34, TOP + 22 + row[nid] * ROW_H + ROW_H / 2
+        return left + col[nid] * COL_W + 34, top + 22 + row[nid] * ROW_H + ROW_H / 2
 
     def radius(nid):
         return NODE_R + 6 if nodes[nid]["kind"] in ("junction", "unit") else NODE_R
@@ -570,7 +603,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         out.append(text(margin, 104, L["finished"], 13, "#2e7d32", "bold"))
 
     # --- columns: tinted lane, title, mini progress bar ---
-    for i, tid in enumerate(cols):
+    for i, tid in enumerate(cols if lanes else ()):
         t, c = tracks[tid], color(tid)
         x0 = left + i * COL_W
         out.append(f'<rect x="{x0 + 4:.1f}" y="{TOP - 44}" width="{COL_W - 8}" height="{body_h + 58}" rx="12" '
@@ -593,11 +626,15 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     for a, b in model["edges"]:
         (x1, y1), (x2, y2) = xy(a), xy(b)
         walked = nodes[a]["status"] in SATISFIED
-        same = col[a] == col[b]
+        same = lanes and col[a] == col[b]
         mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS) if (walked or not same) else len(TRACK_COLORS)
         stroke = TRACK_COLORS[mi] if mi < len(TRACK_COLORS) else FAINT
         opacity = 0.9 if walked else (0.5 if not same else 1)
         width_ = 2.2 if same and in_col[col[a]].index(b) - in_col[col[a]].index(a) == 1 else 1.5
+        if picks and (a in picks or b in picks):  # today's lessons: their edges stand out, the rest steps back
+            opacity = 1
+        elif picks:
+            opacity = round(opacity * 0.55, 2)
         style = f'fill="none" stroke="{stroke}" stroke-width="{width_}" stroke-opacity="{opacity}" marker-end="url(#ar{mi})"'
         if same:
             seq = in_col[col[a]]
@@ -621,7 +658,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         style = (f'fill="none" stroke="{TRACK_COLORS[mi]}" stroke-width="1.6" stroke-opacity="{0.9 if walked else 0.45}" '
                  f'marker-end="url(#ar{mi})"')
         sy = y1 + radius(a) + 2
-        if in_col[col[a]][-1] == a:
+        if not lanes or in_col[col[a]][-1] == a:
             lane = f"M{x1:.1f},{sy:.1f} L{x1:.1f},{lane_bottom - 6:.1f}"
         else:
             lane = f"{_to_gutter(x1, sy)} L{x1 - GUTTER:.1f},{lane_bottom - 6:.1f}"
@@ -658,7 +695,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         if st == "retry":
             g.append(f'<circle cx="{x + r * 0.75:.1f}" cy="{y - r * 0.75:.1f}" r="6.5" fill="#ef6c00"/>'
                      + text(x + r * 0.75, y - r * 0.75 + 3.5, "!", 10, "#ffffff", "bold", "middle"))
-        lab = n["label"] if model["level"] == "lessons" else ""
+        lab = n["label"]
         lines = _wrap(lab, 11.5, COL_W - 70, 2, weight == "bold")
         ty = y + 4 - (len(lines) - 1) * 7
         for k, line in enumerate(lines):
@@ -702,10 +739,10 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
 
 
 def svg_to_png(svg_path, png_path):
-    """Convert with whichever converter is installed; raise RuntimeError if none works.
+    """Convert with the first converter installed (fastest first); return its name, raise RuntimeError if none works.
 
     The pixel size comes from the SVG's width/height (render_svg(scale=...)), so every converter
-    renders at the same resolution."""
+    renders at the same resolution. The PNG is then losslessly shrunk if pngquant/optipng is installed."""
     final = Path(png_path)
     svg_path, png_path = str(svg_path), str(final.with_name(f".tmp-{os.getpid()}-{final.name}"))  # atomic: rename at the end
     attempts = [
@@ -720,12 +757,22 @@ def svg_to_png(svg_path, png_path):
             continue
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode == 0 and Path(png_path).exists() and Path(png_path).stat().st_size > 0:
+            _optimize_png(png_path)
             os.replace(png_path, final)
             return exe
         tried.append(exe)
         Path(png_path).unlink(missing_ok=True)
     raise RuntimeError("no working SVG→PNG converter" + (f" (tried {', '.join(tried)})" if tried else "")
                        + ". Install one: `apt install librsvg2-bin` (rsvg-convert), or send the .svg / use --format md or text.")
+
+
+def _optimize_png(path):
+    """Flat-colour maps compress well; best effort, never fatal (a failed optimizer leaves the file as is)."""
+    if shutil.which("pngquant"):
+        subprocess.run(["pngquant", "--force", "--skip-if-larger", "--speed", "3", "--quality", "70-100",
+                        "--output", path, path], capture_output=True)
+    elif shutil.which("optipng"):
+        subprocess.run(["optipng", "-quiet", "-o1", path], capture_output=True)
 
 
 def migration_warnings(old_plan, new_plan):

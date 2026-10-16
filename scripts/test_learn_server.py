@@ -143,7 +143,7 @@ class TestProtocol(Base):
                   "result": "pass", "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
                   "content": "# me", "key": "language", "value": "ru", "language": "ru", "cta": "/x", "markdown": True,
                   "all": True, "limit": 5, "name": "teach", "json": True, "cards": [{"q": "q2", "a": "a2"}],
-                  "format": "svg", "scale": 1.5}
+                  "format": "svg", "scale": 1.5, "full": True}
         parser_errors = ("unrecognized arguments", "usage:", "expected one argument", "invalid choice",
                          "arguments are required", "ambiguous option", "invalid int value", "invalid float value")
         for t in self.server.core.tools.values():

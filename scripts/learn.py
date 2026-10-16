@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -903,37 +904,71 @@ def cmd_today(args):
     emit(args, data, "\n".join(lines))
 
 
+MAX_PNG_BYTES = 1_000_000  # a phone picture: bigger ones get re-rendered smaller
+
+
 def cmd_graph(args):
     st = Store(args)
     slug, plan, prog = st.select_one(args.plan)
-    model = G.build_model(plan, prog, args.level)
-    c = counts(plan, prog)
-    title = f"{plan['title']}"
+    level, phone = args.level, args.format == "png" and not args.full
+    try:
+        model = G.build_model(plan, prog, level, args.track)
+    except KeyError as e:
+        raise LearnError(e.args[0])
+    if phone and not G.phone_fit(model):
+        level, model = "units", G.build_model(plan, prog, "units")
+        print(f"note: {len(model['tracks'])} tracks are too wide for a phone — showing one point per track. "
+              f"One track in detail: --track <id> ({', '.join(t['id'] for t in model['tracks'])}); "
+              "every lesson in one big picture: --full", file=sys.stderr)
+    if args.track:
+        t = model["tracks"][0]
+        title, done, total = f"{plan['title']} · {t['title']}", t["done"], t["total"]
+    else:
+        c = counts(plan, prog)
+        title, done, total = plan["title"], c["done"], c["total"]
     if args.json:
         print(json.dumps(model, ensure_ascii=False, indent=2))
         return
-    if args.format in ("svg", "png"):
-        if not 1 <= args.scale <= 4:
-            raise LearnError("--scale must be between 1 and 4")
-        out = Path(args.out) if args.out else st.plans_dir / slug / f"graph.{args.format}"
-        _, quota = day_quota(plan, prog, st.today)
-        picks = [l["id"] for l in G.day_plan(plan, prog, quota, iso(st.today))] if args.level == "lessons" else []
-        svg = G.render_svg(title, plan, prog, model, c["done"], c["total"], today=iso(st.today), picks=picks,
-                           lang=st.cfg.get("language", "en"), scale=args.scale if args.format == "png" else 1,
-                           speed=speed_report(plan, prog, st.today))
-        if args.format == "svg":
-            write_text(out, svg)
-        else:
-            svg_path = out.with_suffix(".svg")
-            write_text(svg_path, svg)
-            try:
-                G.svg_to_png(svg_path, out)
-            except RuntimeError as e:
-                raise LearnError(f"{e}\n(SVG saved at {svg_path})")
+    if args.format not in ("svg", "png"):
+        render = {"text": G.render_text, "md": G.render_md, "mermaid": G.render_mermaid}[args.format]
+        print(render(title, plan, prog, model, done, total))
+        return
+    if args.scale is not None and not 1 <= args.scale <= 4:
+        raise LearnError("--scale must be between 1 and 4")
+    out = Path(args.out) if args.out else st.plans_dir / slug / f"graph.{args.format}"
+    _, quota = day_quota(plan, prog, st.today)
+    picks = [l["id"] for l in G.day_plan(plan, prog, quota, iso(st.today), args.track)] if level == "lessons" else []
+
+    def draw(scale, max_px):
+        return G.render_svg(title, plan, prog, model, done, total, today=iso(st.today), picks=picks,
+                            lang=st.cfg.get("language", "en"), scale=scale, speed=speed_report(plan, prog, st.today),
+                            max_px=max_px)
+    if args.format == "svg":
+        write_text(out, draw(1, None))
         print(out)
         return
-    render = {"text": G.render_text, "md": G.render_md, "mermaid": G.render_mermaid}[args.format]
-    print(render(title, plan, prog, model, c["done"], c["total"]))
+    # png: phone size by default (2x, at most PHONE_PX wide); --scale or --full: exactly that density
+    scale = args.scale if args.scale is not None else (1 if args.full else 2)
+    max_px = G.PHONE_PX if phone and args.scale is None else None
+    svg_path = out.with_suffix(".svg")
+    while True:
+        svg = draw(scale, max_px)
+        if out.is_file() and svg_path.is_file() and out.stat().st_mtime >= svg_path.stat().st_mtime \
+                and svg_path.read_text(encoding="utf-8") == svg:
+            print("png: unchanged since the last render — cached", file=sys.stderr)
+            break
+        write_text(svg_path, svg)
+        t0 = time.monotonic()
+        try:
+            exe = G.svg_to_png(svg_path, out)
+        except RuntimeError as e:
+            raise LearnError(f"{e}\n(SVG saved at {svg_path})")
+        size = out.stat().st_size
+        print(f"png: {exe}, {time.monotonic() - t0:.1f} s, {size // 1024} KB", file=sys.stderr)
+        if not max_px or size <= MAX_PNG_BYTES or scale <= 1:
+            break
+        scale, max_px = max(1, scale * 0.75), max_px * 0.75  # too heavy for a chat: smaller, same layout
+    print(out)
 
 
 def cmd_next(args):
@@ -1285,7 +1320,11 @@ def build_parser():
                    help="text (chat code block), md (rich Markdown table), mermaid (Obsidian), svg/png (image file)")
     p.add_argument("--level", choices=["lessons", "units"], default="lessons")
     p.add_argument("-o", "--out", help="output file for svg/png (default: plans/<slug>/graph.<ext>)")
-    p.add_argument("--scale", type=float, default=2, help="png: pixel density, 1..4 (default 2 — sharp on phones)")
+    p.add_argument("--track", help="only this track (unit id), every lesson of it — readable on a phone")
+    p.add_argument("--scale", type=float, help="png: exact pixel density, 1..4 (default: fit a phone — 2x, at most 1400 px "
+                                               "wide; --full: 1)")
+    p.add_argument("--full", action="store_true", help="png: every lesson of every track, however wide "
+                                                       "(by default plans with 5+ tracks show one point per track)")
 
     p = add("start", cmd_start, "set the plan's start date (default: today)")
     p.add_argument("--date", help="YYYY-MM-DD")

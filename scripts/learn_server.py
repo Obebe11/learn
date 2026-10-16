@@ -223,7 +223,9 @@ def graph_image(core, a):
     fmt = a.get("format", "png")
     argv = ["graph", f"--format={fmt}", f"--level={a.get('level', 'lessons')}"]
     argv += [f"--plan={a['plan']}"] if "plan" in a else []
+    argv += [f"--track={a['track']}"] if "track" in a else []
     argv += [f"--scale={a['scale']}"] if "scale" in a else []
+    argv += ["--full"] if a.get("full") else []
     o = core.cli(argv)
     if not o.ok:
         return o
@@ -271,20 +273,25 @@ TOOLS = [
     Tool("learn_graph", "The knowledge map of a graph plan: tracks, junctions, what is ready / locked. "
                         "view=text for plain chat (put it in a code block), md for a table, mermaid for diagram renderers.",
          lambda core, a: core.cli(["graph", f"--format={a.get('view', 'text')}", *([f"--plan={a['plan']}"] if "plan" in a else []),
-                                   f"--level={a.get('level', 'lessons')}", *(["--json"] if a.get("json") else [])]),
+                                   f"--level={a.get('level', 'lessons')}", *([f"--track={a['track']}"] if "track" in a else []),
+                                   *(["--json"] if a.get("json") else [])]),
          {"plan": PLAN, "view": {"type": "string", "enum": ["text", "md", "mermaid"]},
-          "level": {"type": "string", "enum": ["lessons", "units"]}}, readonly=True, structured=True),
+          "level": {"type": "string", "enum": ["lessons", "units"]}, "track": TRACK}, readonly=True, structured=True),
     Tool("learn_graph_image",
          "The knowledge map as a picture — show it whenever the learner asks about progress, the map or what is next. "
          "One column per track with its progress bar; filled = done, ringed = ready now, orange = retry, pale = locked, "
          "diamond = junction, gold ring = today's lessons; every branch flows into one final point, the plan's goal; "
-         "a badge shows the speed (actual vs needed lessons/day). Returns the PNG itself (2x, sharp on phones) and keeps a copy on "
-         "the server. format=svg returns the vector file (for clients that render SVG; also the fallback when the server "
+         "a badge shows the speed (actual vs needed lessons/day). Returns the PNG itself, sized for a phone (at most 1400 px "
+         "wide, labels readable); plans with 5+ tracks come back as one point per track — then offer track=<id> for one "
+         "track in detail. Keeps a copy on the server and re-uses it while the map is unchanged. format=svg returns the vector file (for clients that render SVG; also the fallback when the server "
          "has no PNG converter).",
          graph_image,
          {"plan": PLAN, "level": {"type": "string", "enum": ["lessons", "units"]},
           "format": {"type": "string", "enum": ["png", "svg"]},
-          "scale": {"type": "number", "minimum": 1, "maximum": 4, "description": "png pixel density (default 2)"}},
+          "track": TRACK,
+          "full": {"type": "boolean", "description": "png: every lesson of every track in one big picture (not for phones)"},
+          "scale": {"type": "number", "minimum": 1, "maximum": 4,
+                    "description": "exact png pixel density (default: fit a phone)"}},
          readonly=True),
     Tool("learn_week", "Last-7-days summary: lessons passed, average score, reviews recalled, active days.",
          cli("week"), readonly=True, structured=True),
