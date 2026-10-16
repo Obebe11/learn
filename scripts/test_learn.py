@@ -426,6 +426,55 @@ class TestGraphViews(GraphBase):
         for needle in ("P1", "A2", "J1", "Python", "AI career"):
             self.assertIn(needle, text)
 
+    def test_svg_lanes_today_ring_and_language(self):
+        import xml.etree.ElementTree as ET
+        out = os.path.join(self.tmp.name, "g.svg")
+        self.run_cmd("done", "P1", "--score", "1", day="2026-10-05")
+        self.run_cmd("config", "language", "en")
+        self.run_cmd("graph", "--format", "svg", "-o", out, day="2026-10-06")
+        root = ET.parse(out).getroot()
+        ns = "{http://www.w3.org/2000/svg}"
+        text = " ".join(t.text or "" for t in root.iter(ns + "text"))
+        self.assertIn("1/6 lessons done", text)
+        self.assertIn("Today: ", text)  # the day's picks are listed and ringed
+        self.assertTrue(any(c.get("stroke") == "#f9a825" for c in root.iter(ns + "circle")))
+        for title in ("Python", "AI basics", "Projects"):  # one lane per track, with its own progress
+            self.assertIn(title, text)
+        self.assertIn("1/3", text)
+        tips = [t.text for t in root.iter(ns + "title")]
+        self.assertIn("P1 — Functions (done)", tips)
+        self.assertIn("J1 — Chatbot script (locked)", tips)
+        self.assertEqual(root.get("width"), root.get("viewBox").split()[2])  # svg: natural size
+        self.run_cmd("config", "language", "ru")
+        self.run_cmd("graph", "--format", "svg", "-o", out, day="2026-10-06")
+        self.assertIn("уроков пройдено", Path(out).read_text())
+        self.assertIn("Сегодня: ", Path(out).read_text())
+
+    def test_svg_lanes_never_share_a_cell_and_keep_prerequisites_above(self):
+        import learn_graph as G
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["units"][2]["lessons"].append(lesson("J2", "Second project", kind="junction", requires=["P2", "A2"]))
+        prog = {"lessons": {}, "events": []}
+        model = G.build_model(plan, prog)
+        cols, col, row, _ = G._layout(model)
+        self.assertEqual(cols[1], "PR")  # the junction lane sits between the tracks it joins
+        cells = [(col[n], row[n]) for n in col]
+        self.assertEqual(len(cells), len(set(cells)))
+        for a, b in model["edges"]:
+            self.assertLess(row[a], row[b])
+
+    def test_png_scale_is_checked(self):
+        self.assertIn("--scale", self.run_cmd("graph", "--format", "png", "--scale", "9", expect=1))
+
+    @unittest.skipUnless(__import__("shutil").which("rsvg-convert"), "needs rsvg-convert")
+    def test_png_is_rendered_at_the_requested_scale(self):
+        widths = []
+        for scale in ("1", "3"):
+            out = os.path.join(self.tmp.name, f"g{scale}.png")
+            self.run_cmd("graph", "--format", "png", "--scale", scale, "-o", out)
+            widths.append(int.from_bytes(Path(out).read_bytes()[16:20], "big"))
+        self.assertAlmostEqual(widths[1], 3 * widths[0], delta=3)
+
     def test_png_without_converter_explains(self):
         import shutil
         real = shutil.which

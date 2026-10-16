@@ -777,6 +777,13 @@ def cmd_status(args):
     emit(args, data, "\n".join(lines))
 
 
+def day_quota(plan, prog, today):
+    """(scheduled today?, lessons still to teach today)."""
+    scheduled = is_scheduled(plan, today) and today >= effective_start(plan, prog)
+    left = plan["pace"]["lessons_per_day"] - len(lesson_events_on(prog, today))
+    return scheduled, max(0, left) if scheduled else 0
+
+
 def cmd_today(args):
     st = Store(args)
     plans = st.select(args.plan)
@@ -792,8 +799,7 @@ def cmd_today(args):
         done_today = len(lesson_events_on(prog, t))
         start = effective_start(plan, prog)
         started = t >= start
-        scheduled = is_scheduled(plan, t) and started
-        quota = max(0, lpd - done_today) if scheduled else 0
+        scheduled, quota = day_quota(plan, prog, t)
         pr = pace_report(plan, prog, t)
         try:
             todo = G.day_plan(plan, prog, quota, iso(t), args.track) if quota else []
@@ -873,8 +879,13 @@ def cmd_graph(args):
         print(json.dumps(model, ensure_ascii=False, indent=2))
         return
     if args.format in ("svg", "png"):
+        if not 1 <= args.scale <= 4:
+            raise LearnError("--scale must be between 1 and 4")
         out = Path(args.out) if args.out else st.plans_dir / slug / f"graph.{args.format}"
-        svg = G.render_svg(title, plan, prog, model, c["done"], c["total"])
+        _, quota = day_quota(plan, prog, st.today)
+        picks = [l["id"] for l in G.day_plan(plan, prog, quota, iso(st.today))] if args.level == "lessons" else []
+        svg = G.render_svg(title, plan, prog, model, c["done"], c["total"], today=iso(st.today), picks=picks,
+                           lang=st.cfg.get("language", "en"), scale=args.scale if args.format == "png" else 1)
         if args.format == "svg":
             write_text(out, svg)
         else:
@@ -1239,6 +1250,7 @@ def build_parser():
                    help="text (chat code block), md (rich Markdown table), mermaid (Obsidian), svg/png (image file)")
     p.add_argument("--level", choices=["lessons", "units"], default="lessons")
     p.add_argument("-o", "--out", help="output file for svg/png (default: plans/<slug>/graph.<ext>)")
+    p.add_argument("--scale", type=float, default=2, help="png: pixel density, 1..4 (default 2 — sharp on phones)")
 
     p = add("start", cmd_start, "set the plan's start date (default: today)")
     p.add_argument("--date", help="YYYY-MM-DD")

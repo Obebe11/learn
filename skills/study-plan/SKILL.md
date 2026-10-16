@@ -15,7 +15,7 @@ All state lives in plain files managed by `learn` (stdlib Python; data dir `$LEA
 learn init --language ru --timezone Europe/Moscow     # once
 learn plans | status | week
 learn create <slug> --file plan.json  [--update]      # validates, renders PLAN.md
-learn graph [--format text|md|mermaid|svg|png] [--level lessons|units]   # the knowledge map (graph plans)
+learn graph [--format text|md|mermaid|svg|png] [--level lessons|units] [--scale 1..4]   # the knowledge map; png = a picture to send
 learn start [--date YYYY-MM-DD]                       # change the plan's start date (default: today)
 learn pause|resume|archive <slug>
 learn sync                                           # git-sync the data dir across devices
@@ -157,7 +157,7 @@ Rules enforced by `learn create`: unique `L..`/`U..`/`O..` ids, `title`+`goal`, 
 
 ## Progress and review rhythm
 
-- **"How am I doing?"** → `learn status` (and `PLAN.md`): bar, pace, projected finish, reviews due; for a graph plan also per-track progress and what is ready. Report plainly, lead with what's going well. "Show me the map" → `learn graph`.
+- **"How am I doing?"** → `learn status` (and `PLAN.md`): bar, pace, projected finish, reviews due; for a graph plan also per-track progress and what is ready. Report plainly, lead with what's going well. If you can send images, add the map as a picture (`learn graph --format png` → send the printed path; remote server: `learn_graph_image`) — it shows the whole state at a glance. "Show me the map" → the same picture, or `learn graph` as text.
 - **Weekly** (Sunday, or the rest day): `learn week`. Ask two questions: what felt solid, what keeps slipping? Adjust the *practice type or resource* for what's slipping — not just the schedule. Add or change lessons by editing the plan (see Revising).
 - **Behind schedule**: `learn` already shows `behind N`. Do **not** schedule catch-up doubles — cramming defeats spacing. The projected finish date simply moves; tell the learner that's fine. If they've been behind for 2+ weeks, offer: lighten to 1 lesson/day, pause (`learn pause`), or cut a unit.
 - **Failed lessons** come back automatically (`retry`) — the next session re-teaches the gaps first.

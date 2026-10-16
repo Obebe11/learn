@@ -14,6 +14,7 @@ Plans without `graph: true` stay linear (the whole plan is one chain).
 Everything here is a pure function of the plan/progress dicts.
 """
 
+import os
 import shutil
 import subprocess
 import xml.sax.saxutils as xml
@@ -368,10 +369,73 @@ def render_mermaid(title, plan, prog, model, done=None, total=None):
 
 
 # ----------------------------------------------------------------------------
-# SVG
+# SVG: one column per track, prerequisites always above what they unlock
 # ----------------------------------------------------------------------------
 
-def render_svg(title, plan, prog, model, done=None, total=None):
+SVG_TEXT = {
+    "en": {"done": "done", "available": "ready", "retry": "retry", "locked": "locked", "skipped": "skipped",
+           "junction": "junction", "today": "today", "of": "lessons done", "ready_now": "ready now",
+           "retries": "to retry", "today_list": "Today", "ready_list": "Ready now", "finished": "All done 🎉"},
+    "ru": {"done": "пройдено", "available": "готово", "retry": "пересдать", "locked": "закрыто",
+           "skipped": "пропущено", "junction": "проект", "today": "сегодня", "of": "уроков пройдено",
+           "ready_now": "готово сейчас", "retries": "пересдать", "today_list": "Сегодня",
+           "ready_list": "Готово сейчас", "finished": "Всё пройдено 🎉"},
+}
+FONT = "'DejaVu Sans', 'Noto Sans', 'Segoe UI', Helvetica, Arial, sans-serif"
+INK, MUTED, FAINT, TODAY = "#263238", "#607d8b", "#b0bec5", "#f9a825"
+COL_W, ROW_H, NODE_R, TOP = 212, 62, 17, 162
+
+
+def _text_w(text, size, bold=False):
+    """Rough rendered width, calibrated on DejaVu Sans (the widest common fallback), so wrapped labels fit."""
+    def em(ch):
+        if ch in " .,:;!|il'()[]ftj":
+            return 0.34
+        if ch.isdigit():
+            return 0.6
+        cyr = "\u0400" <= ch <= "\u04ff"
+        if ch.isupper():
+            return 0.73 if cyr else 0.68
+        return 0.66 if cyr else 0.57
+    return sum(em(ch) for ch in str(text)) * size * (1.1 if bold else 1)
+
+
+def _wrap(text, size, width, lines=2, bold=False):
+    words, out, cur = " ".join(str(text).split()).split(" "), [], ""
+    for w in words:
+        trial = f"{cur} {w}".strip()
+        if _text_w(trial, size, bold) <= width or not cur:
+            cur = trial
+        else:
+            out.append(cur)
+            cur = w
+    out.append(cur)
+    if len(out) > lines:
+        out = out[:lines]
+        out[-1] += " …"
+    for i, line in enumerate(out):  # a single word longer than the box
+        while _text_w(line, size, bold) > width and len(line) > 2:
+            line = line[:-2] + "…"
+        out[i] = line
+    return out
+
+
+def _column_order(tracks, edges, unit):
+    """Order the track columns so that cross-track edges stay short (exhaustive up to 7 tracks)."""
+    import itertools
+    ids = [t["id"] for t in tracks]
+    cross = [(unit[a], unit[b]) for a, b in edges if unit[a] != unit[b]]
+    if len(ids) > 7 or not cross:
+        return ids
+    orig = {t: i for i, t in enumerate(ids)}
+
+    def cost(perm):
+        at = {t: i for i, t in enumerate(perm)}
+        return (sum(abs(at[a] - at[b]) for a, b in cross), sum(abs(at[t] - orig[t]) for t in perm))
+    return list(min(itertools.permutations(ids), key=cost))
+
+
+def _layout(model):
     nodes = {n["id"]: n for n in model["nodes"]}
     preds = defaultdict(list)
     for a, b in model["edges"]:
@@ -385,98 +449,212 @@ def render_svg(title, plan, prog, model, done=None, total=None):
 
     for n in nodes:
         d(n)
-    unit_idx = {t["id"]: i for i, t in enumerate(model["tracks"])}
     index = {n["id"]: i for i, n in enumerate(model["nodes"])}
-    layers = defaultdict(list)
-    for n in model["nodes"]:
-        layers[depth[n["id"]]].append(n["id"])
-    for k in layers:
-        layers[k].sort(key=lambda i: (unit_idx[nodes[i]["unit"]], index[i]))
+    cols = _column_order(model["tracks"], model["edges"], {i: n["unit"] for i, n in nodes.items()})
+    col = {n: cols.index(nodes[n]["unit"]) for n in nodes}
+    row, last = {}, defaultdict(lambda: -1)
+    for n in sorted(nodes, key=lambda i: (depth[i], index[i])):  # topological; two nodes never share a cell
+        row[n] = max([row[p] + 1 for p in preds[n]] + [last[col[n]] + 1, 0])
+        last[col[n]] = row[n]
+    return cols, col, row, preds
 
-    dx, dy, r = 100, 86, 18
-    width = max(len(v) for v in layers.values()) * dx + 80
-    width = max(width, 420)
-    pos = {}
-    for k in sorted(layers):
-        ids = layers[k]
-        if k > 0:  # barycenter ordering keeps edges short
-            ids.sort(key=lambda i: (sum(pos[p][0] for p in preds[i] if p in pos) / max(1, len([p for p in preds[i] if p in pos]))
-                                    if preds[i] else unit_idx[nodes[i]["unit"]] * dx, index[i]))
-        for j, i in enumerate(ids):
-            pos[i] = (width / 2 + (j - (len(ids) - 1) / 2) * dx, 70 + k * dy)
-    height = 70 + (max(layers) + 1) * dy + 16 + 28 * (1 + (len(model["tracks"]) + 1) // 2)
+
+def _ring_point(x, y, r, dx, dy):
+    """Point on a node's outline towards (dx, dy)."""
+    dist = (dx * dx + dy * dy) ** 0.5 or 1
+    return x + dx / dist * r, y + dy / dist * r
+
+
+def render_svg(title, plan, prog, model, done=None, total=None, today=None, picks=(), lang="en", scale=1):
+    """A swimlane map: one column per track, rows follow the prerequisites.
+
+    Fill = status (track colour when done), outline = track, diamond = junction,
+    gold ring = today's lessons. `scale` multiplies the pixel size only (crisper PNG).
+    """
+    L = SVG_TEXT["ru" if str(lang).lower().startswith("ru") else "en"]
+    nodes = {n["id"]: n for n in model["nodes"]}
+    tracks = {t["id"]: t for t in model["tracks"]}
+    tindex = {t["id"]: i for i, t in enumerate(model["tracks"])}
+    cols, col, row, preds = _layout(model)
+    picks = [p for p in picks if p in nodes]
+    nrows = max(row.values(), default=0) + 1
+    margin = 20
+    width = max(len(cols) * COL_W + 2 * margin, 640)
+    left = (width - len(cols) * COL_W) / 2
+    body_h = nrows * ROW_H
+    height = TOP + body_h + 74
 
     def color(unit):
-        return TRACK_COLORS[unit_idx[unit] % len(TRACK_COLORS)]
+        return TRACK_COLORS[tindex[unit] % len(TRACK_COLORS)]
 
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" '
-           f'viewBox="0 0 {width:.0f} {height:.0f}" font-family="Helvetica, Arial, sans-serif">',
-           f"<title>{xml.escape(title)}</title>",
-           '<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
-           '<path d="M0,0 L10,5 L0,10 z" fill="#90a4ae"/></marker></defs>',
-           f'<rect width="100%" height="100%" fill="#ffffff"/>',
-           f'<text x="16" y="26" font-size="15" font-weight="bold" fill="#263238">{xml.escape(title)}'
-           + (f" — {done}/{total}" if done is not None else "") + "</text>"]
-    import math
+    def xy(nid):
+        return left + col[nid] * COL_W + 34, TOP + 22 + row[nid] * ROW_H + ROW_H / 2
+
+    def radius(nid):
+        return NODE_R + 6 if nodes[nid]["kind"] in ("junction", "unit") else NODE_R
+
+    def esc(t):
+        return xml.escape(str(t))
+
+    def text(x, y, s, size=11, fill=INK, weight="normal", anchor="start", halo=False, extra=""):
+        h = ' stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round" paint-order="stroke"' if halo else ""
+        return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size}" font-weight="{weight}" fill="{fill}" '
+                f'text-anchor="{anchor}"{h}{extra}>{esc(s)}</text>')
+
+    W, H = width * scale, height * scale
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H:.0f}" '
+           f'viewBox="0 0 {width:.0f} {height:.0f}" font-family="{FONT}">',
+           f"<title>{esc(title)}</title>", "<defs>"]
+    for i, c in enumerate(TRACK_COLORS + [FAINT]):
+        out.append(f'<marker id="ar{i}" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" '
+                   f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{c}"/></marker>')
+    out += ["</defs>", '<rect width="100%" height="100%" fill="#ffffff"/>']
+
+    # --- header: title, overall progress, what to do next ---
+    done = sum(1 for n in model["nodes"] if n["status"] == "done") if done is None else done
+    total = len(model["nodes"]) if total is None else total
+    tsize = 22
+    while _text_w(title, tsize, True) > width - 2 * margin and tsize > 14:
+        tsize -= 1
+    out.append(text(margin, 38, _wrap(title, tsize, width - 2 * margin, 1, True)[0], tsize, INK, "bold"))
+    pct = round(100 * done / total) if total else 0
+    statuses = [n["status"] for n in model["nodes"]]
+    stats = [f"{done}/{total} {L['of']} · {pct}%"]
+    if model["level"] == "lessons":
+        stats.append(f"{L['ready_now']}: {statuses.count('available') + statuses.count('retry')}")
+        if statuses.count("retry"):
+            stats.append(f"{L['retries']}: {statuses.count('retry')}")
+    if today:
+        stats.append(".".join(reversed(today.split("-"))) if L is SVG_TEXT["ru"] else today)
+    out.append(text(margin, 62, " · ".join(stats), 13, MUTED))
+    bar_w = width - 2 * margin
+    out.append(f'<rect x="{margin}" y="74" width="{bar_w}" height="8" rx="4" fill="#eceff1"/>')
+    if total and done:
+        out.append(f'<rect x="{margin}" y="74" width="{max(8, bar_w * done / total):.1f}" height="8" rx="4" fill="#43a047"/>')
+    if picks:
+        head, items = L["today_list"], [nodes[p] for p in picks]
+    else:
+        head, items = L["ready_list"], [n for n in model["nodes"] if n["status"] in ("available", "retry")]
+    if items and model["level"] == "lessons":
+        line = f"{head}: " + " · ".join(f"{n['id']} {n['label']}" if len(items) <= 2 else n["id"] for n in items[:12])
+        out.append(text(margin, 104, _wrap(line, 13, bar_w, 1, True)[0], 13, INK, "bold"))
+    elif total and done == total:
+        out.append(text(margin, 104, L["finished"], 13, "#2e7d32", "bold"))
+
+    # --- columns: tinted lane, title, mini progress bar ---
+    for i, tid in enumerate(cols):
+        t, c = tracks[tid], color(tid)
+        x0 = left + i * COL_W
+        out.append(f'<rect x="{x0 + 4:.1f}" y="{TOP - 44}" width="{COL_W - 8}" height="{body_h + 58}" rx="12" '
+                   f'fill="{c}" fill-opacity="0.045"/>')
+        out.append(f'<rect x="{x0 + 4:.1f}" y="{TOP - 44}" width="{COL_W - 8}" height="4" rx="2" fill="{c}"/>')
+        for k, line in enumerate(_wrap(t["title"], 12, COL_W - 28, 2, True)):
+            out.append(text(x0 + 14, TOP - 22 + k * 15, line, 12, c, "bold"))
+        bw = COL_W - 80
+        out.append(f'<rect x="{x0 + 14:.1f}" y="{TOP + 4}" width="{bw}" height="6" rx="3" fill="{c}" fill-opacity="0.15"/>')
+        if t["done"]:
+            out.append(f'<rect x="{x0 + 14:.1f}" y="{TOP + 4}" width="{max(6, bw * t["done"] / t["total"]):.1f}" '
+                       f'height="6" rx="3" fill="{c}"/>')
+        out.append(text(x0 + COL_W - 14, TOP + 11, f"{t['done']}/{t['total']}", 11, MUTED, anchor="end"))
+
+    # --- edges, under the nodes ---
+    in_col = defaultdict(list)
+    for nid in sorted(nodes, key=lambda i: row[i]):
+        in_col[col[nid]].append(nid)
+    edges_out = []
     for a, b in model["edges"]:
-        (x1, y1), (x2, y2) = pos[a], pos[b]
-        span = depth[b] - depth[a]
-        if span > 1:
-            # long edge: bend it sideways, to whichever side clears the nodes in the layers it skips
-            def clearance(sign):
-                worst = 1e9
-                for k in range(depth[a] + 1, depth[b]):
-                    t = (k - depth[a]) / span
-                    bx = x1 + (x2 - x1) * t + sign * 55 * math.sin(math.pi * t) * 0.75
-                    for i in layers[k]:
-                        worst = min(worst, abs(pos[i][0] - bx))
-                return worst
-            sign = 1 if clearance(1) >= clearance(-1) else -1
-            off = sign * 55
-            end_y = y2 - (r + 8)
-            out.append(f'<path d="M{x1:.1f},{y1 + r + 2:.1f} C{x1 + off:.1f},{y1 + dy * 0.45:.1f} '
-                       f'{x2 + off:.1f},{end_y - dy * 0.45:.1f} {x2:.1f},{end_y:.1f}" fill="none" '
-                       f'stroke="#90a4ae" stroke-width="1.5" marker-end="url(#ar)"/>')
+        (x1, y1), (x2, y2) = xy(a), xy(b)
+        walked = nodes[a]["status"] in SATISFIED
+        same = col[a] == col[b]
+        mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS) if (walked or not same) else len(TRACK_COLORS)
+        stroke = TRACK_COLORS[mi] if mi < len(TRACK_COLORS) else FAINT
+        opacity = 0.9 if walked else (0.5 if not same else 1)
+        width_ = 2.2 if same and in_col[col[a]].index(b) - in_col[col[a]].index(a) == 1 else 1.5
+        style = f'fill="none" stroke="{stroke}" stroke-width="{width_}" stroke-opacity="{opacity}" marker-end="url(#ar{mi})"'
+        if same:
+            seq = in_col[col[a]]
+            if seq.index(b) - seq.index(a) == 1:  # neighbours in the lane: a straight line
+                edges_out.append(f'<line x1="{x1:.1f}" y1="{y1 + radius(a) + 2:.1f}" x2="{x2:.1f}" '
+                                 f'y2="{y2 - radius(b) - 3:.1f}" {style}/>')
+            else:  # skips nodes of its own lane: bend through the left gutter
+                sx, sy = _ring_point(x1, y1, radius(a) + 2, -1, 1)
+                ex, ey = _ring_point(x2, y2, radius(b) + 3, -1, -1)
+                edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} C{x1 - 34:.1f},{sy + 30:.1f} {x2 - 34:.1f},{ey - 30:.1f} '
+                                 f'{ex:.1f},{ey:.1f}" {style}/>')
             continue
-        dxl, dyl = x2 - x1, y2 - y1
-        dist = (dxl * dxl + dyl * dyl) ** 0.5 or 1
-        ox, oy = dxl / dist * (r + 3), dyl / dist * (r + 3)
-        out.append(f'<line x1="{x1 + ox:.1f}" y1="{y1 + oy:.1f}" x2="{x2 - ox:.1f}" y2="{y2 - oy:.1f}" '
-                   f'stroke="#90a4ae" stroke-width="1.5" marker-end="url(#ar)"/>')
+        side = 1 if col[b] > col[a] else -1
+        sx, sy = _ring_point(x1, y1, radius(a) + 2, side, 1.2)
+        ex, ey = _ring_point(x2, y2, radius(b) + 3, -side, -1.2)
+        bend = max(28.0, (ey - sy) * 0.5)
+        edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} C{sx:.1f},{sy + bend:.1f} {ex:.1f},{ey - bend:.1f} '
+                         f'{ex:.1f},{ey:.1f}" {style}/>')
+    out += edges_out
+
+    # --- nodes ---
     for nid, n in nodes.items():
-        x, y = pos[nid]
-        fill, ring = STATUS_FILL[n["status"]], color(n["unit"])
+        x, y = xy(nid)
+        c, st = color(n["unit"]), n["status"]
+        r = radius(nid)
+        fill, ring, ring_op, idc, labc, weight = {
+            "done": (c, c, 1, "#ffffff", INK, "normal"),
+            "available": ("#ffffff", c, 1, INK, INK, "bold"),
+            "retry": ("#ffe0b2", "#ef6c00", 1, INK, "#bf360c", "bold"),
+            "locked": ("#f7f9fa", c, 0.35, MUTED, MUTED, "normal"),
+            "skipped": ("#f5f5f5", FAINT, 1, MUTED, MUTED, "normal"),
+        }.get(st, ("#ffffff", c, 1, INK, INK, "normal"))
+        g = [f'<g><title>{esc(nid)} — {esc(n["label"])} ({esc(L.get(st, st))})</title>']
+        if nid in picks:
+            g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r + 7}" fill="none" stroke="{TODAY}" stroke-width="3"/>')
+        elif st in ("available", "retry"):
+            g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r + 6}" fill="{ring}" fill-opacity="0.16"/>')
+        dash = ' stroke-dasharray="4 3"' if st == "skipped" else ""
+        common = f'fill="{fill}" stroke="{ring}" stroke-opacity="{ring_op}" stroke-width="3"{dash}'
         if n["kind"] == "junction":
-            rr = r + 5
-            shape = (f'<polygon points="{x:.1f},{y - rr:.1f} {x + rr:.1f},{y:.1f} {x:.1f},{y + rr:.1f} {x - rr:.1f},{y:.1f}" '
-                     f'fill="{fill}" stroke="{ring}" stroke-width="3"/>')
+            g.append(f'<polygon points="{x:.1f},{y - r:.1f} {x + r:.1f},{y:.1f} {x:.1f},{y + r:.1f} {x - r:.1f},{y:.1f}" '
+                     f'stroke-linejoin="round" {common}/>')
         else:
-            shape = f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" fill="{fill}" stroke="{ring}" stroke-width="3"/>'
-        weight = "bold" if n["status"] in ("available", "retry") else "normal"
-        out.append(shape)
-        out.append(f'<text x="{x:.1f}" y="{y + 4:.1f}" font-size="11" font-weight="{weight}" text-anchor="middle" fill="#263238">'
-                   f'{xml.escape(n["short"])}</text>')
-        out.append(f'<text x="{x:.1f}" y="{y + r + 15:.1f}" font-size="10" text-anchor="middle" fill="#455a64">'
-                   f'{xml.escape(_short(n["label"], 16))}</text>')
-    ly = height - 28 * (1 + (len(model["tracks"]) + 1) // 2) + 6
-    lx = 16
-    for s, label in (("done", "done"), ("available", "ready"), ("retry", "retry"), ("locked", "locked")):
-        out.append(f'<circle cx="{lx + 6}" cy="{ly}" r="6" fill="{STATUS_FILL[s]}" stroke="#455a64"/>'
-                   f'<text x="{lx + 18}" y="{ly + 4}" font-size="11" fill="#455a64">{label}</text>')
-        lx += 84
-    out.append(f'<polygon points="{lx + 6},{ly - 7} {lx + 13},{ly} {lx + 6},{ly + 7} {lx - 1},{ly}" fill="#fff" stroke="#455a64"/>'
-               f'<text x="{lx + 20}" y="{ly + 4}" font-size="11" fill="#455a64">junction</text>')
-    for i, t in enumerate(model["tracks"]):
-        cx, cy = 16 + (i % 2) * 210, ly + 26 + (i // 2) * 24
-        out.append(f'<circle cx="{cx + 6}" cy="{cy}" r="6" fill="#fff" stroke="{color(t["id"])}" stroke-width="3"/>'
-                   f'<text x="{cx + 18}" y="{cy + 4}" font-size="11" fill="#263238">{xml.escape(_short(t["title"], 24))}</text>')
+            g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r}" {common}/>')
+        g.append(text(x, y + 4, n["short"], 10.5 if len(n["short"]) > 3 else 11.5, idc, "bold", "middle"))
+        if st == "retry":
+            g.append(f'<circle cx="{x + r * 0.75:.1f}" cy="{y - r * 0.75:.1f}" r="6.5" fill="#ef6c00"/>'
+                     + text(x + r * 0.75, y - r * 0.75 + 3.5, "!", 10, "#ffffff", "bold", "middle"))
+        lab = n["label"] if model["level"] == "lessons" else ""
+        lines = _wrap(lab, 11.5, COL_W - 70, 2, weight == "bold")
+        ty = y + 4 - (len(lines) - 1) * 7
+        for k, line in enumerate(lines):
+            g.append(text(x + r + (14 if nid in picks else 10), ty + k * 14, line, 11.5, labc,
+                          weight, halo=True, extra=' text-decoration="line-through"' if st == "skipped" else ""))
+        g.append("</g>")
+        out.append("".join(g))
+
+    # --- legend ---
+    ly = TOP + 22 + body_h + 34
+    lx = margin
+    swatch = [("done", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{TRACK_COLORS[0]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
+              ("available", f'<circle cx="{{x}}" cy="{ly}" r="10" fill="{TRACK_COLORS[0]}" fill-opacity="0.16"/>'
+                            f'<circle cx="{{x}}" cy="{ly}" r="7" fill="#fff" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
+              ("retry", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="#ffe0b2" stroke="#ef6c00" stroke-width="2"/>'),
+              ("locked", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="#f7f9fa" stroke="{TRACK_COLORS[0]}" '
+                         f'stroke-opacity="0.35" stroke-width="2"/>'),
+              ("junction", f'<polygon points="{{x}},{ly - 9} {{x9}},{ly} {{x}},{ly + 9} {{x_9}},{ly}" fill="#fff" '
+                           f'stroke="{MUTED}" stroke-width="2"/>')]
+    if picks:
+        swatch.append(("today", f'<circle cx="{{x}}" cy="{ly}" r="9" fill="none" stroke="{TODAY}" stroke-width="2.5"/>'))
+    for key, shape in swatch:
+        cx = lx + 10
+        out.append(shape.format(x=cx, x9=cx + 9, x_9=cx - 9) + text(cx + 16, ly + 4, L[key], 12, MUTED))
+        lx += 34 + _text_w(L[key], 12)
     out.append("</svg>")
     return "\n".join(out)
 
 
 def svg_to_png(svg_path, png_path):
-    """Convert with whichever converter is installed; raise RuntimeError if none works."""
-    svg_path, png_path = str(svg_path), str(png_path)
+    """Convert with whichever converter is installed; raise RuntimeError if none works.
+
+    The pixel size comes from the SVG's width/height (render_svg(scale=...)), so every converter
+    renders at the same resolution."""
+    final = Path(png_path)
+    svg_path, png_path = str(svg_path), str(final.with_name(f".tmp-{os.getpid()}-{final.name}"))  # atomic: rename at the end
     attempts = [
         ("rsvg-convert", ["rsvg-convert", "-o", png_path, svg_path]),
         ("inkscape", ["inkscape", svg_path, "--export-type=png", f"--export-filename={png_path}"]),
@@ -489,8 +667,10 @@ def svg_to_png(svg_path, png_path):
             continue
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode == 0 and Path(png_path).exists() and Path(png_path).stat().st_size > 0:
+            os.replace(png_path, final)
             return exe
         tried.append(exe)
+        Path(png_path).unlink(missing_ok=True)
     raise RuntimeError("no working SVG→PNG converter" + (f" (tried {', '.join(tried)})" if tried else "")
                        + ". Install one: `apt install librsvg2-bin` (rsvg-convert), or send the .svg / use --format md or text.")
 

@@ -1,7 +1,9 @@
 """Tests for learn_server.py — run: python3 scripts/test_learn_server.py"""
+import base64
 import http.client
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,10 @@ from test_learn import PLAN  # noqa: E402
 
 TOKEN = "t" * 40
 SERVER_PY = str(Path(S.__file__))
+
+
+def text_of(result):
+    return next(c["text"] for c in result["content"] if c["type"] == "text")
 
 
 class Base(unittest.TestCase):
@@ -67,7 +73,7 @@ class Base(unittest.TestCase):
 
     def tool(self, name, args=None, expect_error=False):
         res = self.rpc("tools/call", {"name": name, "arguments": args or {}})["result"]
-        text = res["content"][0]["text"]
+        text = text_of(res)
         self.assertEqual(res["isError"], expect_error, text)
         return text
 
@@ -136,7 +142,8 @@ class TestProtocol(Base):
                   "lesson": "L03", "score": 0.5, "note": "n", "accept": True, "force": True, "card": "py/C001",
                   "result": "pass", "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
                   "content": "# me", "key": "language", "value": "ru", "language": "ru", "cta": "/x", "markdown": True,
-                  "all": True, "limit": 5, "name": "teach", "json": True, "cards": [{"q": "q2", "a": "a2"}]}
+                  "all": True, "limit": 5, "name": "teach", "json": True, "cards": [{"q": "q2", "a": "a2"}],
+                  "format": "svg", "scale": 1.5}
         parser_errors = ("unrecognized arguments", "usage:", "expected one argument", "invalid choice",
                          "arguments are required", "ambiguous option", "invalid int value", "invalid float value")
         for t in self.server.core.tools.values():
@@ -146,7 +153,7 @@ class TestProtocol(Base):
             if t.name == "learn_skip":
                 args["lesson"] = "L06"
             res = self.rpc("tools/call", {"name": t.name, "arguments": args})["result"]
-            text = res["content"][0]["text"]
+            text = text_of(res)
             self.assertFalse(any(e in text for e in parser_errors), f"{t.name}: {text}")
             unmapped = set(args) ^ set(t.schema["properties"])
             self.assertFalse(unmapped, f"{t.name}: sample has no value for {unmapped}")
@@ -231,7 +238,47 @@ class TestSessionOverMcp(Base):
         self.create_plan()
         self.assertIn("Python basics", self.tool("learn_graph"))
         self.assertTrue(self.tool("learn_graph", {"view": "mermaid"}).startswith(("graph", "flowchart")))
-        self.tool("learn_graph", {"view": "png"}, expect_error=True)  # not offered remotely
+        self.tool("learn_graph", {"view": "png"}, expect_error=True)  # pictures come from learn_graph_image
+
+    def test_graph_image_svg_comes_back_as_a_resource_and_is_kept(self):
+        self.create_plan()
+        res = self.rpc("tools/call", {"name": "learn_graph_image", "arguments": {"format": "svg"}})["result"]
+        self.assertFalse(res["isError"], res)
+        svg = next(c["resource"] for c in res["content"] if c["type"] == "resource")
+        self.assertEqual(svg["mimeType"], "image/svg+xml")
+        self.assertIn("<svg", svg["text"])
+        self.assertIn("Python basics", svg["text"])
+        saved = os.path.join(self.home, "plans", "py", "graph.svg")
+        self.assertIn(saved, text_of(res))
+        self.assertTrue(os.path.exists(saved))
+
+    @unittest.skipUnless(shutil.which("rsvg-convert"), "needs rsvg-convert")
+    def test_graph_image_png_is_an_mcp_image_with_the_requested_density(self):
+        self.create_plan()
+        sizes = []
+        for scale in (1, 2):
+            res = self.rpc("tools/call", {"name": "learn_graph_image", "arguments": {"scale": scale}})["result"]
+            self.assertFalse(res["isError"], res)
+            img = next(c for c in res["content"] if c["type"] == "image")
+            self.assertEqual(img["mimeType"], "image/png")
+            data = base64.b64decode(img["data"])
+            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+            sizes.append(int.from_bytes(data[16:20], "big"))
+            self.assertIn(f"{sizes[-1]}×", text_of(res))
+        self.assertAlmostEqual(sizes[1], 2 * sizes[0], delta=2)
+
+    def test_graph_image_without_a_png_converter_is_a_readable_error(self):
+        self.create_plan()
+        old = os.environ["PATH"]
+        os.environ["PATH"] = self.tmp.name  # no rsvg-convert / inkscape / magick there
+        try:
+            err = self.tool("learn_graph_image", expect_error=True)
+        finally:
+            os.environ["PATH"] = old
+        self.assertIn("no working SVG", err)
+        self.assertIn("graph.svg", err)
+        self.assertEqual(self.tool("learn_graph_image", {"scale": 9}, expect_error=True),
+                         "scale must be between 1 and 4")
 
     def test_cli_errors_come_back_as_tool_errors(self):
         self.create_plan()
@@ -334,6 +381,18 @@ class TestRest(Base):
         status, _, _ = self.http("POST", "/api/tools/learn_status", "[1]")
         self.assertEqual(status, 400)
         self.assertEqual(self.http("GET", "/api/nothing")[0], 404)
+
+    def test_graph_image_over_rest(self):
+        self.call("learn_create", {"slug": "py", "plan": PLAN})
+        status, headers, data = self.http("GET", "/api/tools/learn_graph_image?format=svg&raw=1")
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["Content-Type"].startswith("image/svg+xml"))
+        self.assertEqual(headers["Content-Security-Policy"], "script-src 'none'")
+        self.assertTrue(data.startswith(b"<svg"))
+        status, r = self.call("learn_graph_image", {"format": "svg"})
+        self.assertEqual(status, 200)
+        self.assertEqual(r["images"][0]["mimeType"], "image/svg+xml")
+        self.assertTrue(base64.b64decode(r["images"][0]["data"]).startswith(b"<svg"))
 
     def test_get_is_for_read_only_tools_and_coerces_the_query(self):
         self.call("learn_create", {"slug": "py", "plan": PLAN})

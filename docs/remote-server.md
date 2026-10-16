@@ -12,7 +12,7 @@
 
 Что умеет сервер:
 
-- **MCP** (Streamable HTTP, `POST /mcp`) — 23 инструмента, `instructions` и 4 промпта (скиллы `daily-lesson`, `study-plan`, `teach`, `visualize`);
+- **MCP** (Streamable HTTP, `POST /mcp`) — 24 инструмента, `instructions` и 4 промпта (скиллы `daily-lesson`, `study-plan`, `teach`, `visualize`);
 - **REST** (`/api/tools/<имя>`) — те же инструменты для curl, скриптов и «Команд» iOS;
 - **stdio** (`--stdio`) — MCP без открытого порта: клиент запускает сервер через `ssh`.
 
@@ -20,11 +20,12 @@
 
 ## 1. Установка на VPS
 
-Нужны Python 3.9+ и git. Всё ниже — от обычного пользователя (root нужен только для Caddy).
+Нужны Python 3.9+ и git. Всё ниже — от обычного пользователя (root нужен только для Caddy и пакета для картинок).
 
 ```bash
 git clone https://github.com/obebe11/learn ~/learn
 ln -sf ~/learn/scripts/learn.py ~/.local/bin/learn
+sudo apt install librsvg2-bin                            # rsvg-convert: карта прогресса картинкой (PNG)
 learn init --language ru --timezone Europe/Moscow        # каталог данных ~/learning (если его ещё нет)
 
 # секретный токен — единственный ключ к вашим данным
@@ -100,6 +101,13 @@ curl -H "$H" -d '{"json":true}' $API/learn_status                       # {"ok":
 curl -H "$H" $API                                                       # список инструментов со схемами аргументов
 ```
 
+Карта прогресса картинкой — прямо в браузере телефона (PNG; `&format=svg` — векторная, `&scale=3` — ещё чётче):
+
+```bash
+curl -H "$H" -o map.png "$API/learn_graph_image?raw=1"
+# закладка: https://learn.example.com/t/<токен>/api/tools/learn_graph_image?raw=1
+```
+
 GET разрешён только для инструментов, которые ничего не меняют, поэтому закладку в браузере телефона `https://learn.example.com/t/<токен>/api/tools/learn_status?raw=1` можно безопасно открывать сколько угодно раз. Коды ответов: `400` — неверные аргументы, `401` — токен, `404` — нет такого инструмента, `422` — `learn` отказал (например, «no such lesson»).
 
 ### Hermes + Telegram на том же VPS
@@ -114,10 +122,12 @@ GET разрешён только для инструментов, которы�
 |---|---|
 | Занятие | `learn_today`, `learn_next`, `learn_done`, `learn_skip`, `learn_graph` |
 | Повторения | `learn_card_add`, `learn_card_retire`, `learn_review_due`, `learn_review_grade` |
-| Прогресс | `learn_status`, `learn_plans`, `learn_week`, `learn_nudge` |
+| Прогресс | `learn_status`, `learn_graph_image`, `learn_plans`, `learn_week`, `learn_nudge` |
 | Планы | `learn_create` (план — JSON-объект в аргументе; `update: true` сохраняет прогресс), `learn_show`, `learn_validate`, `learn_start`, `learn_set_plan_status` |
 | Профиль и настройки | `learn_profile_get`, `learn_profile_set`, `learn_config_get`, `learn_config_set` |
 | Методика | `learn_skill` (без имени — список; `daily-lesson`, `study-plan`, `teach`, `visualize`) |
+
+**Карта картинкой — `learn_graph_image`.** Спросите «как мой прогресс?» или «покажи карту» — модель вызовет его (сервер сам подсказывает это в `instructions`) и получит PNG прямо в ответе инструмента (MCP-блок `image`), а копия ляжет на сервер в `~/learning/plans/<план>/graph.png`. На картинке: колонка на каждую ветку с полоской прогресса, залитый круг — пройдено, круг с подсветкой — готово сейчас, оранжевый — пересдать, бледный — закрыто, ромб — проект (точка соединения), золотое кольцо — уроки на сегодня; в шапке — общий прогресс и что учить сегодня. Аргументы: `scale` 1–4 (по умолчанию 2 — резко на телефоне; PNG ≈ 1,2 МБ на 90 уроков, `scale: 1` — примерно вдвое легче), `level: units` — одна точка на ветку, `format: svg` — векторный файл (если на сервере нет `rsvg-convert`, PNG не получится — инструмент так и скажет). Покажет ли клиент картинку вам, а не только модели, зависит от клиента; надёжный путь на телефоне — закладка из раздела REST.
 
 Нет `learn_sync`: источник истины один, сливать нечего. Нет `learn init`: каталог создаётся один раз при установке. Каталог данных клиент выбрать не может — он задаётся при запуске сервера.
 
@@ -132,6 +142,6 @@ GET разрешён только для инструментов, которы�
 
 ## 5. Что проверено, а что нет
 
-Проверено: 31 автотест сервера (`python3 scripts/test_learn_server.py`: протокол, авторизация, проверка аргументов, параллельные записи, REST, stdio) и 60 тестов `learn.py`; живой сервер подключался официальным Python-клиентом `mcp` (v2.3.0) — по HTTP с токеном в URL и в заголовке, неверный токен отклонялся, по stdio; полный сценарий (план → урок → карточки → повторение) прошёл. Файл systemd-службы прошёл `systemd-analyze verify`.
+Проверено: 35 автотестов сервера (`python3 scripts/test_learn_server.py`: протокол, авторизация, проверка аргументов, параллельные записи, REST, stdio) и 64 теста `learn.py`; живой сервер подключался официальным Python-клиентом `mcp` (v2.3.0) — по HTTP с токеном в URL и в заголовке, неверный токен отклонялся, по stdio; полный сценарий (план → урок → карточки → повторение) прошёл. Файл systemd-службы прошёл `systemd-analyze verify`.
 
 Не проверено: запуск под настоящим systemd и Caddy на VPS, подключение через интерфейс приложений Claude/Codex/Cursor (в них формы коннекторов и требования к авторизации меняются — сверяйтесь с их документацией), и то, как конкретная модель ведёт занятие через `learn_skill`. Если что-то не подключается, начните с `curl https://…/health` и `journalctl --user -u learn-server`.
