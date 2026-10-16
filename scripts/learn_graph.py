@@ -376,11 +376,12 @@ SVG_TEXT = {
     "en": {"done": "done", "available": "ready", "retry": "retry", "locked": "locked", "skipped": "skipped",
            "junction": "junction", "today": "today", "of": "lessons done", "ready_now": "ready now",
            "retries": "to retry", "today_list": "Today", "ready_list": "Ready now", "finished": "All done 🎉",
-           "goal": "Goal"},
+           "goal": "Goal", "speed": "Speed", "per_day": "{a} of {n} lessons/day needed"},
     "ru": {"done": "пройдено", "available": "готово", "retry": "пересдать", "locked": "закрыто",
            "skipped": "пропущено", "junction": "проект", "today": "сегодня", "of": "уроков пройдено",
            "ready_now": "готово сейчас", "retries": "пересдать", "today_list": "Сегодня",
-           "ready_list": "Готово сейчас", "finished": "Всё пройдено 🎉", "goal": "Цель"},
+           "ready_list": "Готово сейчас", "finished": "Всё пройдено 🎉", "goal": "Цель",
+           "speed": "Скорость", "per_day": "{a} из {n} нужных уроков/день"},
 }
 FONT = "'DejaVu Sans', 'Noto Sans', 'Segoe UI', Helvetica, Arial, sans-serif"
 INK, MUTED, FAINT, TODAY = "#263238", "#607d8b", "#b0bec5", "#f9a825"
@@ -467,12 +468,13 @@ def _layout(model):
     return cols, col, row, preds
 
 
-def render_svg(title, plan, prog, model, done=None, total=None, today=None, picks=(), lang="en", scale=1):
+def render_svg(title, plan, prog, model, done=None, total=None, today=None, picks=(), lang="en", scale=1, speed=None):
     """A swimlane map: one column per track, rows follow the prerequisites, and every
     branch flows into one final point — the plan's goal.
 
     Fill = status (track colour when done), outline = track, diamond = junction,
-    gold ring = today's lessons. All arrows into a node meet at its top.
+    gold ring = today's lessons. All arrows into a node meet at its top. `speed` (learn.speed_report)
+    adds a badge: green at or above the needed pace, orange from 0.8, red below.
     `scale` multiplies the pixel size only (crisper PNG).
     """
     L = SVG_TEXT["ru" if str(lang).lower().startswith("ru") else "en"]
@@ -523,10 +525,26 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     # --- header: title, overall progress, what to do next ---
     done = sum(1 for n in model["nodes"] if n["status"] == "done") if done is None else done
     total = len(model["nodes"]) if total is None else total
+    head_w = width - 2 * margin  # room left of the speed badge
+    if speed and speed.get("speed") is not None:
+        def num(v, fmt):
+            return format(v, fmt).replace(".", ",") if L is SVG_TEXT["ru"] else format(v, fmt)
+        v = speed["speed"]
+        tone = "#2e7d32" if v >= 1 else "#ef6c00" if v >= 0.8 else "#c62828"
+        big = f"{L['speed']} {num(v, '.2f')}×"
+        small = L["per_day"].format(a=num(speed["lessons_per_day"], ".1f"), n=num(speed["needed_per_day"], ".1f"))
+        pw = max(_text_w(big, 16, True), _text_w(small, 11)) + 28
+        px = width - margin - pw
+        out.append(f'<g><title>{esc(big)} = {esc(small)}</title>'
+                   f'<rect x="{px:.1f}" y="14" width="{pw:.1f}" height="50" rx="10" fill="{tone}" fill-opacity="0.1" '
+                   f'stroke="{tone}" stroke-width="1.5"/>'
+                   + text(px + pw / 2, 36, big, 16, tone, "bold", "middle")
+                   + text(px + pw / 2, 54, small, 11, tone, anchor="middle") + "</g>")
+        head_w -= pw + 16
     tsize = 22
-    while _text_w(title, tsize, True) > width - 2 * margin and tsize > 14:
+    while _text_w(title, tsize, True) > head_w and tsize > 14:
         tsize -= 1
-    out.append(text(margin, 38, _wrap(title, tsize, width - 2 * margin, 1, True)[0], tsize, INK, "bold"))
+    out.append(text(margin, 38, _wrap(title, tsize, head_w, 1, True)[0], tsize, INK, "bold"))
     pct = round(100 * done / total) if total else 0
     statuses = [n["status"] for n in model["nodes"]]
     stats = [f"{done}/{total} {L['of']} · {pct}%"]
@@ -536,7 +554,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             stats.append(f"{L['retries']}: {statuses.count('retry')}")
     if today:
         stats.append(".".join(reversed(today.split("-"))) if L is SVG_TEXT["ru"] else today)
-    out.append(text(margin, 62, " · ".join(stats), 13, MUTED))
+    out.append(text(margin, 62, _wrap(" · ".join(stats), 13, head_w, 1)[0], 13, MUTED))
     bar_w = width - 2 * margin
     out.append(f'<rect x="{margin}" y="74" width="{bar_w}" height="8" rx="4" fill="#eceff1"/>')
     if total and done:

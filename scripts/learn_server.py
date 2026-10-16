@@ -260,7 +260,8 @@ TOOLS = [
          {"plan": PLAN, "track": TRACK, "max_reviews": {"type": "integer", "minimum": 0, "maximum": 50,
                                                          "description": "cap on warm-up reviews (default 6)"}},
          readonly=True, structured=True),
-    Tool("learn_status", "Progress per plan: bar, pace (behind/ahead), projected finish date, reviews due, next lesson.",
+    Tool("learn_status", "Progress per plan: bar, pace (behind/ahead), speed (average lessons/day so far divided by the "
+                         "average the plan needs; 1.0 = on schedule), projected finish date, reviews due, next lesson.",
          cli("status", opts=("plan",)), {"plan": PLAN}, readonly=True, structured=True),
     Tool("learn_plans", "List all plans with status and progress.",
          cli("plans"), readonly=True, structured=True),
@@ -276,7 +277,8 @@ TOOLS = [
     Tool("learn_graph_image",
          "The knowledge map as a picture — show it whenever the learner asks about progress, the map or what is next. "
          "One column per track with its progress bar; filled = done, ringed = ready now, orange = retry, pale = locked, "
-         "diamond = junction, gold ring = today's lessons; every branch flows into one final point, the plan's goal. Returns the PNG itself (2x, sharp on phones) and keeps a copy on "
+         "diamond = junction, gold ring = today's lessons; every branch flows into one final point, the plan's goal; "
+         "a badge shows the speed (actual vs needed lessons/day). Returns the PNG itself (2x, sharp on phones) and keeps a copy on "
          "the server. format=svg returns the vector file (for clients that render SVG; also the fallback when the server "
          "has no PNG converter).",
          graph_image,

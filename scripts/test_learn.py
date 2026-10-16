@@ -117,6 +117,30 @@ class TestDaily(Base):
         self.assertEqual(len(p["lessons"]), 2)
         self.assertIsNotNone(p["projected_finish"])
 
+    def test_speed_is_average_lessons_per_day_over_the_needed_average(self):
+        sp = lambda day: self.js("status", day=day)["plans"][0]["pace"]["speed"]  # noqa: E731
+        self.assertIsNone(sp("2026-10-04"))  # not started yet
+        self.assertIsNone(sp("2026-10-05"))  # first morning: no day to average over
+        self.run_cmd("done", "L01", "--score", "1", day="2026-10-05")
+        s = sp("2026-10-05")  # today counts once a lesson is done today
+        self.assertEqual((s["lessons_per_day"], s["needed_per_day"], s["basis"]), (1.0, 1.43, "pace"))  # 2 x 5/7
+        self.assertEqual(s["speed"], 0.7)
+        self.run_cmd("done", "L02", "--score", "1", day="2026-10-06")
+        self.run_cmd("done", "L03", "--score", "1", day="2026-10-06")
+        s = sp("2026-10-07")  # 3 lessons over Mon+Tue; Wednesday morning not counted yet
+        self.assertEqual((s["days"], s["lessons_per_day"], s["speed"]), (2, 1.5, 1.05))
+        self.assertIn("speed 1.05×", self.run_cmd("status", day="2026-10-07"))
+
+    def test_speed_with_a_deadline_uses_the_deadline(self):
+        plan = json.loads(json.dumps(PLAN))
+        plan["deadline"] = "2026-10-16"  # 6 lessons over 12 days: 0.5 a day needed
+        f = os.path.join(self.tmp.name, "p.json")
+        Path(f).write_text(json.dumps(plan))
+        self.run_cmd("create", "py", "--file", f, "--update")
+        self.run_cmd("done", "L01", "--score", "1", day="2026-10-05")
+        s = self.js("status", day="2026-10-06")["plans"][0]["pace"]["speed"]
+        self.assertEqual((s["needed_per_day"], s["basis"], s["lessons_per_day"], s["speed"]), (0.5, "deadline", 1.0, 2.0))
+
     def test_projected_finish_skips_rest_days(self):
         out = self.js("status", day="2026-10-05")["plans"][0]["pace"]
         # 6 lessons at 2/day: Mon, Tue, Wed
@@ -445,8 +469,10 @@ class TestGraphViews(GraphBase):
         self.assertIn("P1 — Functions (done)", tips)
         self.assertIn("J1 — Chatbot script (locked)", tips)
         self.assertEqual(root.get("width"), root.get("viewBox").split()[2])  # svg: natural size
+        self.assertIn("Speed 0.70×", text)  # 1 lesson in 1 day / (2 x 5/7) needed
         self.run_cmd("config", "language", "ru")
         self.run_cmd("graph", "--format", "svg", "-o", out, day="2026-10-06")
+        self.assertIn("Скорость 0,70×", Path(out).read_text())
         self.assertIn("уроков пройдено", Path(out).read_text())
         self.assertIn("Сегодня: ", Path(out).read_text())
 

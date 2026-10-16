@@ -57,7 +57,7 @@ Milestone lessons (`kind: milestone`): the learner produces the artifact or perf
 ## 3. Wrap-up (≈ 3 min)
 
 1. **Teach-back**: "Explain today's key idea in two sentences, as if to a friend." (Producing the explanation consolidates it; correct gently.)
-2. `learn status` → report in 2 lines: progress bar, pace, finish date. Celebrate real things (a hard idea that clicked, a streak) — truthfully.
+2. `learn status` → report in 2 lines: progress bar, pace and speed, finish date. Celebrate real things (a hard idea that clicked, a streak) — truthfully.
 3. Preview tomorrow in one line, so the next start is easy.
 4. `learn sync`.
 

@@ -299,6 +299,35 @@ def pace_report(plan, prog, today):
             "past_deadline": bool(finish and deadline and iso(finish) > deadline)}
 
 
+def speed_report(plan, prog, today):
+    """Speed = average lessons per day so far / average lessons per day the plan needs.
+
+    Actual: done lessons over calendar days since the start (today counts once a lesson is done today, so a
+    fresh morning doesn't drag the average down). Needed: with a deadline, the remaining-at-start work spread
+    over start..deadline; otherwise the plan's pace (lessons_per_day x study days per week / 7).
+    1.0 = exactly on schedule, below 1 = slower than needed. None until there is a day to average over.
+    """
+    start = effective_start(plan, prog)
+    if today < start:
+        return None
+    done = [prog["lessons"][l["id"]] for l in lessons_of(plan) if lesson_state(prog, l["id"]) == "done"]
+    days = (today - start).days + (1 if any(rec.get("date") == iso(today) for rec in done) else 0)
+    if days <= 0:
+        return None
+    pace = plan["pace"]
+    deadline = plan.get("deadline")
+    c = counts(plan, prog)
+    work = c["total"] - c["skipped"]
+    if deadline and parse_date(deadline) >= start:
+        needed = work / ((parse_date(deadline) - start).days + 1)
+    else:
+        needed = pace["lessons_per_day"] * len(pace["days"]) / 7
+    actual = len(done) / days
+    return {"lessons_per_day": round(actual, 2), "needed_per_day": round(needed, 2),
+            "speed": round(actual / needed, 2) if needed else None, "days": days,
+            "basis": "deadline" if deadline and parse_date(deadline) >= start else "pace"}
+
+
 def due_cards(plan_slug, prog, today, include_future=False):
     out = []
     for c in prog["cards"]:
@@ -738,7 +767,8 @@ def plan_status_summary(st, slug, plan, prog):
     return {"slug": slug, "title": plan["title"], "status": prog["status"], **c,
             "percent": pct(c["done"], c["total"]),
             "pace": {"lessons_per_day": plan["pace"]["lessons_per_day"], "days": plan["pace"]["days"],
-                     **{k: pr[k] for k in ("behind", "ahead", "projected_finish", "past_deadline")}},
+                     **{k: pr[k] for k in ("behind", "ahead", "projected_finish", "past_deadline")},
+                     "speed": speed_report(plan, prog, st.today)},
             "cards": len(cards), "reviews_due": len(due),
             "next_lesson": nxt[0]["id"] if nxt else None}
 
@@ -767,6 +797,10 @@ def cmd_status(args):
                   + (f" · finish ≈ {p['projected_finish']}" if p["projected_finish"] else "")
                   + (" ⚠ after deadline" if p["past_deadline"] else ""),
                   f"  reviews due: {s['reviews_due']} of {s['cards']} cards"]
+        sp = p["speed"]
+        if sp and sp["speed"] is not None:
+            lines.insert(-1, f"  speed {sp['speed']:.2f}× · {sp['lessons_per_day']:.2f} lessons/day, "
+                             f"needed {sp['needed_per_day']:.2f}" + (" (by the deadline)" if sp["basis"] == "deadline" else ""))
         if nxt:
             lines.append(f"  next: {nxt['id']} {nxt['title']}")
         if G.graph_mode(plan):
@@ -885,7 +919,8 @@ def cmd_graph(args):
         _, quota = day_quota(plan, prog, st.today)
         picks = [l["id"] for l in G.day_plan(plan, prog, quota, iso(st.today))] if args.level == "lessons" else []
         svg = G.render_svg(title, plan, prog, model, c["done"], c["total"], today=iso(st.today), picks=picks,
-                           lang=st.cfg.get("language", "en"), scale=args.scale if args.format == "png" else 1)
+                           lang=st.cfg.get("language", "en"), scale=args.scale if args.format == "png" else 1,
+                           speed=speed_report(plan, prog, st.today))
         if args.format == "svg":
             write_text(out, svg)
         else:
