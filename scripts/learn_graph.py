@@ -14,6 +14,7 @@ Plans without `graph: true` stay linear (the whole plan is one chain).
 Everything here is a pure function of the plan/progress dicts.
 """
 
+import math
 import os
 import shutil
 import subprocess
@@ -25,7 +26,9 @@ SATISFIED = ("done", "skipped")
 ICON = {"done": "✅", "skipped": "⏭", "retry": "🔁", "available": "▶", "locked": "🔒"}
 STATUS_FILL = {"done": "#a5d6a7", "skipped": "#e0e0e0", "retry": "#ffcc80",
                "available": "#fff59d", "locked": "#eceff1"}
-TRACK_COLORS = ["#3f51b5", "#009688", "#e91e63", "#ff9800", "#795548", "#607d8b", "#8bc34a", "#9c27b0"]
+TRACK_COLORS = ["#3f51b5", "#009688", "#e91e63", "#ff9800", "#795548", "#607d8b", "#8bc34a", "#9c27b0",
+                "#1565c0", "#00838f", "#c62828", "#827717", "#6a1b9a", "#ad1457", "#00695c", "#ef6c00",
+                "#283593", "#558b2f", "#4e342e", "#0277bd", "#4527a0", "#880e4f", "#37474f", "#bf360c"]
 
 
 def graph_mode(plan):
@@ -407,7 +410,7 @@ SVG_TEXT = {
            "retries": "to retry", "today_list": "Today", "ready_list": "Ready now", "finished": "All done 🎉",
            "goal": "Goal", "speed": "Speed", "per_day": "{a} of {n} lessons/day needed"},
     "ru": {"done": "пройдено", "available": "готово", "retry": "пересдать", "locked": "закрыто",
-           "skipped": "пропущено", "junction": "проект", "today": "сегодня", "of": "уроков пройдено",
+           "skipped": "пропущено", "junction": "соединение", "today": "сегодня", "of": "уроков пройдено",
            "ready_now": "готово сейчас", "retries": "пересдать", "today_list": "Сегодня",
            "ready_list": "Готово сейчас", "finished": "Всё пройдено 🎉", "goal": "Цель",
            "speed": "Скорость", "per_day": "{a} из {n} нужных уроков/день"},
@@ -416,7 +419,8 @@ FONT = "'DejaVu Sans', 'Noto Sans', 'Segoe UI', Helvetica, Arial, sans-serif"
 INK, MUTED, FAINT, TODAY = "#263238", "#607d8b", "#b0bec5", "#f9a825"
 COL_W, ROW_H, NODE_R, TOP = 212, 62, 17, 162
 UNIT_COLS = 4  # units map: a grid this many points wide, whatever the number of tracks
-PHONE_PX, PHONE_COLS, MIN_FONT = 1400, 4, 10  # PNG for a phone: width cap; lanes that still fit; smallest font used
+PHONE_PX, PHONE_COLS, MIN_FONT = 1400, 4, 10  # wider lesson maps use a compact DAG instead of lanes
+COMPACT_COLS, COMPACT_COL_W = 8, 116
 GOAL_R = 30
 GUTTER = 28  # lane-internal "bus" left of the nodes, for edges that pass nodes of their own lane
 
@@ -532,17 +536,73 @@ def _layout(model):
     return cols, col, row, preds
 
 
-def phone_fit(model):
-    """Can this map be drawn at most PHONE_PX wide with every label at least 14 px?"""
-    return model["level"] == "units" or len(model["tracks"]) <= PHONE_COLS
+def _compact_layout(model):
+    """Pack each dependency level separately, letting branches bend towards joins.
+
+    Rows hold at most COMPACT_COLS lessons. Barycentric sweeps order neighbours
+    and move each row's compact block towards its prerequisites and successors;
+    x positions are continuous, not permanent track columns.
+    """
+    nodes = {n["id"]: n for n in model["nodes"]}
+    preds, succ = defaultdict(list), defaultdict(list)
+    for a, b in model["edges"]:
+        preds[b].append(a)
+        succ[a].append(b)
+    depth = _depths(list(nodes), preds)
+    layers = defaultdict(list)
+    index = {n: i for i, n in enumerate(nodes)}
+    row = {}
+    for nid in sorted(nodes, key=lambda n: (depth[n], index[n])):
+        r = max([row[p] + 1 for p in preds[nid]] + [depth[nid]])
+        while len(layers[r]) == COMPACT_COLS:
+            r += 1
+        row[nid] = r
+        layers[r].append(nid)
+    ncols = max(map(len, layers.values()), default=1)
+    col = {n: (ncols - len(ids)) / 2 + i for ids in layers.values() for i, n in enumerate(ids)}
+
+    def pack(r, neighbours, reorder=False):
+        ids = layers[r]
+        aims = {n: sum(col[p] for p in neighbours[n]) / len(neighbours[n]) if neighbours[n] else col[n]
+                for n in ids}
+        if r and reorder:  # preserve the plan's root order, as in the reference map
+            ids.sort(key=lambda n: (aims[n], col[n], index[n]))
+        # A row shrinks when branches end, instead of leaving holes in fixed lanes.
+        half = (len(ids) - 1) / 2
+        centre = max(half, min(ncols - 1 - half, sum(aims.values()) / len(ids)))
+        for i, n in enumerate(ids):
+            col[n] = centre + i - half
+
+    for r in sorted(layers):
+        pack(r, preds, reorder=True)
+    # Relax whole row blocks without swapping established branch order. A late
+    # cross-track requirement must not make two otherwise parallel chains cross.
+    for _ in range(3):
+        for r in sorted(layers):
+            pack(r, preds)
+        for r in sorted(layers, reverse=True):
+            pack(r, succ)
+    for r in sorted(layers):
+        pack(r, preds)
+    return list(range(ncols)), col, row, preds
+
+
+def _smooth_path(points):
+    """Monotone vertical Beziers through routing points, without right-angle elbows."""
+    x, y = points[0]
+    parts = [f"M{x:.1f},{y:.1f}"]
+    for (x1, y1), (x2, y2) in zip(points, points[1:]):
+        bend = (y2 - y1) * 0.45
+        parts.append(f"C{x1:.1f},{y1 + bend:.1f} {x2:.1f},{y2 - bend:.1f} {x2:.1f},{y2:.1f}")
+    return " ".join(parts)
 
 
 def render_svg(title, plan, prog, model, done=None, total=None, today=None, picks=(), lang="en", scale=1, speed=None,
                max_px=None):
-    """A swimlane map: one column per track, rows follow the prerequisites, and every
-    branch flows into one final point — the plan's goal.
+    """A lesson map: narrow plans have track lanes, wide plans a compact DAG.
+    Rows follow the prerequisites; the goal summary sits below the graph.
 
-    Fill = status (track colour when done), outline = track, diamond = junction,
+    Fill = status (green/yellow/orange/grey), outline = track, diamond = convergence,
     gold ring = today's lessons. All arrows into a node meet at its top. `speed` (learn.speed_report)
     adds a badge: green at or above the needed pace, orange from 0.8, red below.
     `scale` multiplies the pixel size only (crisper PNG); `max_px` caps the pixel width (lowers the scale).
@@ -552,32 +612,48 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     nodes = {n["id"]: n for n in model["nodes"]}
     tracks = {t["id"]: t for t in model["tracks"]}
     tindex = {t["id"]: i for i, t in enumerate(model["tracks"])}
-    cols, col, row, preds = _layout(model)
+    compact = model["level"] == "lessons" and len(tracks) > PHONE_COLS
+    cols, col, row, preds = _compact_layout(model) if compact else _layout(model)
     picks = [p for p in picks if p in nodes]
     nrows = max(row.values(), default=0) + 1
     margin = 20
-    lanes = model["level"] != "units"
-    col_w = COL_W if len(cols) > 1 or not lanes else 2 * COL_W  # one track: room for whole lesson titles
+    lanes = model["level"] != "units" and not compact
+    col_w = COMPACT_COL_W if compact else COL_W if len(cols) > 1 or not lanes else 2 * COL_W
     width = max(len(cols) * col_w + 2 * margin, 640)
     if max_px:
         scale = min(scale, max_px / width)
     left = (width - len(cols) * col_w) / 2
-    body_h = nrows * ROW_H
+    row_h = ROW_H
 
     def color(unit):
         return TRACK_COLORS[tindex[unit] % len(TRACK_COLORS)]
 
     def xy(nid):
-        return left + col[nid] * col_w + 34, top + 22 + row[nid] * ROW_H + ROW_H / 2
+        return (left + col[nid] * col_w + (col_w / 2 if compact else 34),
+                top + layer_y[row[nid]] if compact else top + 22 + row[nid] * row_h + row_h / 2)
 
     def id_size(nid):
         return 10.5 if len(nodes[nid]["short"]) > 3 else 11.5
 
+    def junction(nid):
+        return nodes[nid]["kind"] == "junction" or len(preds[nid]) > 1
+
     def radius(nid):
         """Wide enough for the id inside it: long ids never spill over the ring."""
-        base = NODE_R + 6 if nodes[nid]["kind"] in ("junction", "unit") else NODE_R
+        base = NODE_R + 6 if junction(nid) or nodes[nid]["kind"] == "unit" else NODE_R
         inner = _text_w(nodes[nid]["short"], id_size(nid), True) / 2 + 5
-        return max(base, round(inner * (1.45 if nodes[nid]["kind"] == "junction" else 1), 1))
+        return max(base, round(inner * (1.45 if junction(nid) else 1), 1))
+
+    layer_nodes = defaultdict(list)
+    for n in nodes:
+        layer_nodes[row[n]].append(n)
+    layer_y, layer_r, cursor = {}, {}, 0
+    if compact:
+        for r in sorted(layer_nodes):
+            layer_r[r] = max(radius(n) for n in layer_nodes[r])
+            layer_y[r] = cursor + layer_r[r] + 8
+            cursor = layer_y[r] + layer_r[r] + 34
+    body_h = cursor if compact else nrows * row_h
 
     def esc(t):
         return xml.escape(str(t))
@@ -644,7 +720,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             head.append(text(margin, y, part, 13, INK, "bold"))
     elif total and done == total:
         head.append(text(margin, y, L["finished"], 13, "#2e7d32", "bold"))
-    top = y + (TOP - 104 if lanes else TOP - 144)  # lanes start below the header (units: no lane headers)
+    top = y + (TOP - 104 if lanes else TOP - 144)
 
     lane_bottom = top + 14 + body_h
     has_succ = {a for a, b in model["edges"] if row[b] > row[a]}
@@ -653,9 +729,20 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     gx, gy = width / 2, lane_bottom + 46 + GOAL_R
     goal_lines = _wrap(f"{L['goal']}: {goal_text}", 13, min(width - 2 * margin, 600), 99, True)
     height = gy + GOAL_R + 26 + 17 * len(goal_lines) + 52
+    legend_positions, lx, legend_shift = [], margin, 0
+    for key in ["done", "available", "retry", "locked", "junction"] + (["today"] if picks else []):
+        item_w = 34 + _text_w(L[key], 12)
+        if lx > margin and lx + item_w > width - margin:
+            lx, legend_shift = margin, legend_shift + 24
+        legend_positions.append((lx, legend_shift))
+        lx += item_w
+    height += legend_shift
+    key_cols = max(1, min(3, int(bar_w // 260)))
+    if compact:
+        height += ((len(tracks) + key_cols - 1) // key_cols) * 38 + 16
 
     W, H = width * scale, height * scale
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.0f}" height="{H:.0f}" '
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{math.ceil(W)}" height="{math.ceil(H)}" '
            f'viewBox="0 0 {width:.0f} {height:.0f}" font-family="{FONT}">',
            f"<title>{esc(title)}</title>", "<defs>"]
     for i, c in enumerate(TRACK_COLORS + [FAINT]):
@@ -683,6 +770,30 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     in_col = defaultdict(list)
     for nid in sorted(nodes, key=lambda i: row[i]):
         in_col[col[nid]].append(nid)
+
+    def flow_path(a, b):
+        (x1, y1), (x2, y2) = xy(a), xy(b)
+        points = [(x1, y1 + radius(a) + 2)]
+        for r in range(row[a] + 1, row[b]):
+            if r not in layer_nodes:
+                continue
+            cy = top + layer_y[r]
+            target = x1 + (x2 - x1) * (cy - y1) / (y2 - y1)
+            boxes = [(xy(n)[0], max(radius(n) + 9, col_w / 2 - 8)) for n in layer_nodes[r]]
+            # Follow the direct connection unless an intermediate lesson blocks it.
+            candidates = [target, left, width - left]
+            candidates += [x + side * (half + 3) for x, half in boxes for side in (-1, 1)]
+            free = [x for x in candidates if margin <= x <= width - margin
+                    and all(abs(x - centre) >= half + 2 for centre, half in boxes)]
+            x = min(free, key=lambda x: (abs(x - target) + 0.15 * abs(x - points[-1][0]), x))
+            points.extend([(x, cy - layer_r[r] - 8), (x, cy + layer_r[r] + 20)])
+        points.append((x2, y2 - radius(b) - 3))
+        if abs(points[1][0] - x1) >= col_w * 0.9:
+            # A wide sideways move clears the source row's captions first.
+            # Short connections keep the direct diagonal curve of the reference.
+            points.insert(1, (x1, y1 + layer_r[row[a]] + 20))
+        return _smooth_path(points)
+
     edges_out = []
     for a, b in model["edges"]:
         (x1, y1), (x2, y2) = xy(a), xy(b)
@@ -695,8 +806,8 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             continue
         walked = nodes[a]["status"] in SATISFIED
         same = lanes and col[a] == col[b]
-        mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS) if (walked or not same) else len(TRACK_COLORS)
-        stroke = TRACK_COLORS[mi] if mi < len(TRACK_COLORS) else FAINT
+        mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS)
+        stroke = TRACK_COLORS[mi]
         opacity = 0.9 if walked else (0.5 if not same else 1)
         width_ = 2.2 if same and in_col[col[a]].index(b) - in_col[col[a]].index(a) == 1 else 1.5
         if picks and (a in picks or b in picks):  # today's lessons: their edges stand out, the rest steps back
@@ -715,9 +826,12 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
                                  f'C{x1 - GUTTER:.1f},{ey - 6:.1f} {x2:.1f},{ey - 14:.1f} {x2:.1f},{ey:.1f}" {style}/>')
             continue
         sx, sy, ex, ey = x1, y1 + radius(a) + 2, x2, y2 - radius(b) - 3
-        bend = min(max(28.0, (ey - sy) * 0.5), ROW_H * 1.2)
-        edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} C{sx:.1f},{sy + bend:.1f} {ex:.1f},{ey - bend:.1f} '
-                         f'{ex:.1f},{ey:.1f}" {style}/>')
+        if compact:
+            edges_out.append(f'<path d="{flow_path(a, b)}" {style}/>')
+        else:
+            bend = min(max(28.0, (ey - sy) * 0.5), ROW_H * 1.2)
+            edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} C{sx:.1f},{sy + bend:.1f} {ex:.1f},{ey - bend:.1f} '
+                             f'{ex:.1f},{ey:.1f}" {style}/>')
     # every branch ends in the goal: down its own lane (through the left gutter when the lane goes on), then in
     for a in sinks:
         x1, y1 = xy(a)
@@ -726,11 +840,20 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         style = (f'fill="none" stroke="{TRACK_COLORS[mi]}" stroke-width="1.6" stroke-opacity="{0.9 if walked else 0.45}" '
                  f'marker-end="url(#ar{mi})"')
         sy = y1 + radius(a) + 2
+        if compact:
+            # Earlier leaves end naturally. Only the bottom frontier joins the goal summary;
+            # artificial full-height rails would turn the map back into straight columns.
+            if row[a] == nrows - 1:
+                path = _smooth_path([(x1, sy), (gx, gy - GOAL_R - 3)])
+                edges_out.append(f'<path d="{path}" {style}/>')
+            continue
         if not lanes or in_col[col[a]][-1] == a:
             lane = f"M{x1:.1f},{sy:.1f} L{x1:.1f},{lane_bottom - 6:.1f}"
         else:
-            lane = f"{_to_gutter(x1, sy)} L{x1 - GUTTER:.1f},{lane_bottom - 6:.1f}"
-            x1 -= GUTTER
+            gutter = GUTTER
+            lane = _to_gutter(x1, sy)
+            lane += f" L{x1 - gutter:.1f},{lane_bottom - 6:.1f}"
+            x1 -= gutter
         edges_out.append(f'<path d="{lane} C{x1:.1f},{lane_bottom + 24:.1f} {gx:.1f},{gy - GOAL_R - 36:.1f} '
                          f'{gx:.1f},{gy - GOAL_R - 3:.1f}" {style}/>')
     out += edges_out
@@ -741,11 +864,11 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         c, st = color(n["unit"]), n["status"]
         r = radius(nid)
         fill, ring, ring_op, idc, labc, weight = {
-            "done": (c, c, 1, "#ffffff", INK, "normal"),
-            "available": ("#ffffff", c, 1, INK, INK, "bold"),
-            "retry": ("#ffe0b2", "#ef6c00", 1, INK, "#bf360c", "bold"),
-            "locked": ("#f7f9fa", c, 0.35, MUTED, MUTED, "normal"),
-            "skipped": ("#f5f5f5", FAINT, 1, MUTED, MUTED, "normal"),
+            "done": (STATUS_FILL["done"], c, 1, INK, INK, "normal"),
+            "available": (STATUS_FILL["available"], c, 1, INK, INK, "bold"),
+            "retry": (STATUS_FILL["retry"], c, 1, INK, "#bf360c", "bold"),
+            "locked": (STATUS_FILL["locked"], c, 1, MUTED, MUTED, "normal"),
+            "skipped": (STATUS_FILL["skipped"], FAINT, 1, MUTED, MUTED, "normal"),
         }.get(st, ("#ffffff", c, 1, INK, INK, "normal"))
         g = [f'<g><title>{esc(nid)} — {esc(n["label"])} ({esc(L.get(st, st))})</title>']
         if nid in picks:
@@ -754,7 +877,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r + 6}" fill="{ring}" fill-opacity="0.16"/>')
         dash = ' stroke-dasharray="4 3"' if st == "skipped" else ""
         common = f'fill="{fill}" stroke="{ring}" stroke-opacity="{ring_op}" stroke-width="3"{dash}'
-        if n["kind"] == "junction":
+        if junction(nid):
             g.append(f'<polygon points="{x:.1f},{y - r:.1f} {x + r:.1f},{y:.1f} {x:.1f},{y + r:.1f} {x - r:.1f},{y:.1f}" '
                      f'stroke-linejoin="round" {common}/>')
         else:
@@ -764,11 +887,14 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             g.append(f'<circle cx="{x + r * 0.75:.1f}" cy="{y - r * 0.75:.1f}" r="6.5" fill="#ef6c00"/>'
                      + text(x + r * 0.75, y - r * 0.75 + 3.5, "!", 10, "#ffffff", "bold", "middle"))
         lab = n["label"]
-        lines = _wrap(lab, 11.5, col_w - 52 - r - (4 if nid in picks else 0), 2, weight == "bold")
-        ty = y + 4 - (len(lines) - 1) * 7
+        size = 10 if compact else 11.5
+        lines = _wrap(lab, size, col_w - 16 if compact else col_w - 52 - r - (4 if nid in picks else 0),
+                      1 if compact else 2, weight == "bold")
+        ty = y + r + 14 if compact else y + 4 - (len(lines) - 1) * 7
         for k, line in enumerate(lines):
-            g.append(text(x + r + (14 if nid in picks else 10), ty + k * 14, line, 11.5, labc,
-                          weight, halo=True, extra=' text-decoration="line-through"' if st == "skipped" else ""))
+            g.append(text(x if compact else x + r + (14 if nid in picks else 10), ty + k * 14, line, size, labc,
+                          weight, anchor="middle" if compact else "start", halo=True,
+                          extra=' text-decoration="line-through"' if st == "skipped" else ""))
         g.append("</g>")
         out.append("".join(g))
 
@@ -787,21 +913,30 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
 
     # --- legend ---
     ly = gy + GOAL_R + 24 + 17 * len(goal_lines) + 22
-    lx = margin
-    swatch = [("done", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{TRACK_COLORS[0]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
+    swatch = [("done", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{STATUS_FILL["done"]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
               ("available", f'<circle cx="{{x}}" cy="{ly}" r="10" fill="{TRACK_COLORS[0]}" fill-opacity="0.16"/>'
-                            f'<circle cx="{{x}}" cy="{ly}" r="7" fill="#fff" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
-              ("retry", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="#ffe0b2" stroke="#ef6c00" stroke-width="2"/>'),
-              ("locked", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="#f7f9fa" stroke="{TRACK_COLORS[0]}" '
-                         f'stroke-opacity="0.35" stroke-width="2"/>'),
+                            f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{STATUS_FILL["available"]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
+              ("retry", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{STATUS_FILL["retry"]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
+              ("locked", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{STATUS_FILL["locked"]}" stroke="{TRACK_COLORS[0]}" '
+                         f'stroke-width="2"/>'),
               ("junction", f'<polygon points="{{x}},{ly - 9} {{x9}},{ly} {{x}},{ly + 9} {{x_9}},{ly}" fill="#fff" '
                            f'stroke="{MUTED}" stroke-width="2"/>')]
     if picks:
         swatch.append(("today", f'<circle cx="{{x}}" cy="{ly}" r="9" fill="none" stroke="{TODAY}" stroke-width="2.5"/>'))
-    for key, shape in swatch:
+    for (key, shape), (lx, shift) in zip(swatch, legend_positions):
         cx = lx + 10
-        out.append(shape.format(x=cx, x9=cx + 9, x_9=cx - 9) + text(cx + 16, ly + 4, L[key], 12, MUTED))
-        lx += 34 + _text_w(L[key], 12)
+        out.append(f'<g transform="translate(0,{shift})">' + shape.format(x=cx, x9=cx + 9, x_9=cx - 9)
+                   + text(cx + 16, ly + 4, L[key], 12, MUTED) + '</g>')
+    if compact:
+        key_w = bar_w / key_cols
+        for i, t in enumerate(model["tracks"]):
+            x, y = margin + i % key_cols * key_w, ly + legend_shift + 32 + i // key_cols * 38
+            label = f"{t['done']}/{t['total']} · {t['title']}"
+            out.append(f'<g><title>{esc(label)}</title><circle cx="{x + 5:.1f}" cy="{y - 3:.1f}" '
+                       f'r="4" fill="{color(t["id"])}"/>')
+            for k, line in enumerate(_wrap(label, 11, key_w - 24, 2)):
+                out.append(text(x + 18, y + k * 14, line, 11, color(t["id"])))
+            out.append("</g>")
     out.append("</svg>")
     return "\n".join(out)
 
