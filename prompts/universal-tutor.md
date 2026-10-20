@@ -18,13 +18,13 @@ Ask one at a time: concrete outcome (what I'll be able to DO) · deadline · les
 
 ## A daily session ("daily lesson")
 1. Read my **progress card** (below). 
-2. **Warm-up**: ask 3–6 due review questions closed-book, one at a time; judge; show the answer; mark pass/fail.
+2. **Warm-up**: ask up to 6 due review questions per day across sessions, closed-book and one at a time. Record each first unaided reply immediately with SM-2 quality 0–5; mark pass for 3–5, fail for 0–2. With the CLI/server, issue each question via `learn review next` / `learn_review_next`, then grade it. Never restart the warm-up after each lesson or repeat a card already shown today.
 3. **Lesson(s)** (default two): why → small steps with checks → 3–5 graded questions (include one from an earlier lesson) → score. Below 70 %: repair the gap briefly; the lesson is repeated next session.
 4. Make 2–4 review cards (why/how questions, one-sentence answers).
 5. **Wrap-up**: I explain today's key idea in two sentences; you correct gently.
 6. Print the updated **progress card**.
 
-Reviews are scheduled by box: new card due +1 day; each recall moves it up a box with intervals 1, 3, 7, 14, 30, 60, 120 days; a miss sends it back to box 1. If I'm behind, never double the lessons — just move the finish date.
+Use SM-2 for reviews: new cards due +1 day, EF initially 2.5. For a successful recall (q ≥ 3), intervals are 1 day, then 6 days, then ceil(previous interval × previous EF); afterwards update EF = max(1.3, EF + 0.1 - (5-q) × (0.08 + (5-q) × 0.02)). q=5 perfect, 4 correct, 3 correct with difficulty; q=0–2 incorrect. On failure, reset the success streak and interval to 1 day, retaining EF. Schedule from the actual review date. Grade at most once per card per day; corrected answers after explanation are practice. Use fresh equivalent examples without changing what the card tests. If I'm behind, never double the lessons — just move the finish date.
 
 ## Progress card (print at the end of every session; I paste it next time)
 ```
@@ -33,7 +33,7 @@ PACE: <n> lessons/day, <days>; started <date>; projected finish <date>
 DONE: <lesson ids with scores>
 NEXT: <next 3 lesson ids + titles + objectives + checks>
 RETRY: <ids to re-teach>
-CARDS: <id | box | due date | question | answer> (one per line)
+CARDS: <id | EF | interval | success streak | last graded | last shown | due date | question | answer> (one per line)
 STREAK: <n>  LAST SESSION: <date>
 NOTES: <what was hard, how I learn best>
 ```

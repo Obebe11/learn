@@ -130,6 +130,7 @@ class TestProtocol(Base):
             self.assertFalse(t["annotations"]["destructiveHint"])
         by = {t["name"]: t for t in tools}
         self.assertTrue(by["learn_today"]["annotations"]["readOnlyHint"])
+        self.assertFalse(by["learn_review_next"]["annotations"]["readOnlyHint"])
         self.assertFalse(by["learn_done"]["annotations"]["readOnlyHint"])
         self.assertIn("json", by["learn_today"]["inputSchema"]["properties"])
         self.assertNotIn("json", by["learn_done"]["inputSchema"]["properties"]["lesson"].get("properties", {}))
@@ -140,7 +141,7 @@ class TestProtocol(Base):
         self.tool("learn_card_add", {"lesson": "L01", "cards": [{"q": "q", "a": "a"}]})
         sample = {"plan": "py", "track": "U1", "max_reviews": 3, "count": 1, "view": "md", "level": "units", "md": True,
                   "lesson": "L03", "score": 0.5, "note": "n", "accept": True, "force": True, "card": "py/C001",
-                  "result": "pass", "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
+                  "result": "pass", "quality": 4, "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
                   "content": "# me", "key": "language", "value": "ru", "language": "ru", "cta": "/x", "markdown": True,
                   "all": True, "limit": 5, "name": "teach", "json": True, "cards": [{"q": "q2", "a": "a2"}],
                   "format": "svg", "scale": 1.5, "full": True}
@@ -192,7 +193,7 @@ class TestSessionOverMcp(Base):
         os.environ["LEARN_TODAY"] = "2026-10-06"
         due = json.loads(self.tool("learn_review_due", {"json": True}))
         self.assertEqual(len(due), 2)
-        self.assertIn("box 2", self.tool("learn_review_grade", {"card": f"py/{due[0]['id']}", "result": "pass"}))
+        self.assertIn("SM-2 q4", self.tool("learn_review_grade", {"card": f"py/{due[0]['id']}", "result": "pass"}))
         self.assertEqual(len(json.loads(self.tool("learn_review_due", {"json": True}))), 1)
 
         # progress is persisted by the real CLI in the data dir
@@ -209,6 +210,29 @@ class TestSessionOverMcp(Base):
         self.assertEqual(json.loads(self.tool("learn_status", {"json": True}))["plans"][0]["total"], 7)
         self.assertIn("- [x] **L01**", self.tool("learn_show", {"md": True}))
         self.tool("learn_create", {"slug": "py", "plan": plan}, expect_error=True)  # exists, no update flag
+
+    def test_persistent_warmup_and_sm2_over_mcp(self):
+        self.create_plan()
+        self.tool("learn_card_add", {"lesson": "L01", "cards": [{"q": f"q{i}", "a": "a"} for i in range(8)]})
+        os.environ["LEARN_TODAY"] = "2026-10-06"
+        card = json.loads(self.tool("learn_review_next", {"json": True}))["card"]
+        self.assertIn("EF 2.6", self.tool("learn_review_grade", {"card": card["id"], "result": "pass", "quality": 5}))
+        self.assertIn("already graded today", self.tool("learn_review_grade", {"card": card["id"], "result": "pass"}))
+        for _ in range(5):
+            self.assertIsNotNone(json.loads(self.tool("learn_review_next", {"json": True}))["card"])
+        self.assertIsNone(json.loads(self.tool("learn_review_next", {"json": True}))["card"])
+        self.assertEqual(json.loads(self.tool("learn_today", {"json": True}))["reviews"], [])
+        prog = json.loads((Path(self.home) / "plans/py/progress.json").read_text())
+        self.assertEqual(sum(c["reps"] for c in prog["cards"]), 1)
+
+    def test_parallel_question_issuance_is_unique_and_capped(self):
+        self.create_plan()
+        self.tool("learn_card_add", {"lesson": "L01", "cards": [{"q": f"q{i}", "a": "a"} for i in range(8)]})
+        os.environ["LEARN_TODAY"] = "2026-10-06"
+        with ThreadPoolExecutor(8) as pool:
+            results = list(pool.map(lambda _: json.loads(self.tool("learn_review_next", {"json": True})), range(10)))
+        ids = [r["card"]["id"] for r in results if r["card"]]
+        self.assertEqual((len(ids), len(set(ids))), (6, 6))
 
     def test_invalid_plan_reports_every_problem(self):
         bad = json.loads(json.dumps(PLAN))
@@ -405,6 +429,7 @@ class TestRest(Base):
         status, headers, _ = self.http("GET", "/api/tools/learn_done?lesson=L01")
         self.assertEqual((status, headers["Allow"]), (405, "POST"))
         self.assertEqual(self.call("learn_done", {"lesson": "L01"})[0], 200)
+        self.assertEqual(self.http("GET", "/api/tools/learn_review_next")[0], 405)
         self.assertEqual(self.http("GET", "/api/tools/learn_status?bogus=1")[0], 400)
 
     def test_oversized_and_chunked_bodies_are_refused(self):
