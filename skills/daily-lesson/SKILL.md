@@ -11,10 +11,10 @@ One session = **warm-up reviews → 1–2 lessons → wrap-up**, about 40–50 m
 
 1. `learn sync` (ignore "not a git repo"; if it reports a conflict, tell the learner and continue read-only). *With `learn_*` MCP tools instead of a shell (remote server): skip this — there is one copy of the data; every `learn <cmd>` below is the tool `learn_<cmd>`, and `profile.md`/`config.json` are `learn_profile_get`/`learn_config_get`.*
 2. Read `<data dir>/profile.md` and `config.json` → lesson language, pace preferences. Speak that language.
-3. `learn today` (add `--plan <slug>` if several plans and the learner named one). It lists today's lessons, a read-only preview of remaining warm-up reviews, streak and pace. Use `learn review next` to issue each actual question.
+3. `learn today` (add `--plan <slug>` if several plans and the learner named one). It lists today's lessons, a read-only preview of remaining warm-up reviews, streak, pace and each plan's `speed` (average completed lessons/day divided by the needed average). Use `learn review next` to issue each actual question.
    - No plan yet → hand over to `study-plan`.
    - Rest day / quota done → only offer reviews; offer one bonus lesson (`learn next`) *only* if asked.
-4. One-line opener: streak, today's plan (e.g. "2 lessons + 4 reviews, ≈ 45 min"). If they've been away 4+ days: no guilt, no catch-up speech — "welcome back, we start light".
+4. Open in two short lines before the warm-up: streak and today's plan (e.g. "2 lessons + 4 reviews, ≈ 45 min"), then each selected plan's speed with actual and needed lessons/day (e.g. "Speed 0.70× · 1.00 lessons/day, needed 1.43"). Use the returned `speed` values; 1.00× means on schedule, below 1 means slower. If `speed` is null or its ratio is null, say "Speed: not enough data yet"; do not invent a ratio. If they've been away 4+ days: no guilt, no catch-up speech — "welcome back, we start light".
 5. Resume an unfinished lesson with a 2-sentence recap, using its saved note and the current conversation to continue at the unfinished step. Do not restart its opening questions or the warm-up from chat history.
 
 ### Graph plans (several tracks): jumping between topics on purpose

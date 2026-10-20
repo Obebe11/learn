@@ -141,6 +141,53 @@ class TestDaily(Base):
         s = self.js("status", day="2026-10-06")["plans"][0]["pace"]["speed"]
         self.assertEqual((s["needed_per_day"], s["basis"], s["lessons_per_day"], s["speed"]), (0.5, "deadline", 1.0, 2.0))
 
+    def test_today_speed_handles_no_data_and_refreshes_after_a_lesson(self):
+        for day in ("2026-10-04", "2026-10-05"):
+            with self.subTest(day=day):
+                self.assertIsNone(self.js("today", day=day)["plans"][0]["speed"])
+                self.assertIn("speed — · not enough data yet", self.run_cmd("today"))
+        self.run_cmd("done", "L01", "--score", "1")
+        progress = Path(self.home) / "plans/py/progress.json"
+        before = progress.read_bytes()
+        for day in ("2026-10-05", "2026-10-06", "2026-10-10"):
+            with self.subTest(day=day):
+                today = self.js("today", day=day)["plans"][0]
+                expected = self.js("status")["plans"][0]["pace"]["speed"]
+                self.assertEqual(today["speed"], expected)
+                self.assertIn(f"speed {expected['speed']:.2f}×", self.run_cmd("today"))
+        self.assertIn("speed 0.70× · 1.00 lessons/day, needed 1.43",
+                      self.run_cmd("today", day="2026-10-06"))
+        self.assertEqual(progress.read_bytes(), before)  # previews do not write progress
+
+    def test_today_reports_zero_speed_for_retries_and_skips(self):
+        self.run_cmd("done", "L01", "--score", "0.2")
+        self.run_cmd("skip", "L02")
+        sp = self.js("today", day="2026-10-06")["plans"][0]["speed"]
+        self.assertEqual((sp["speed"], sp["lessons_per_day"]), (0.0, 0.0))
+        self.assertIn("speed 0.00× · 0.00 lessons/day, needed 1.43", self.run_cmd("today"))
+
+    def test_today_keeps_speed_when_the_daily_quota_is_done(self):
+        self.run_cmd("done", "L01", "--score", "1")
+        self.run_cmd("done", "L02", "--score", "1")
+        p = self.js("today")["plans"][0]
+        self.assertEqual((p["quota"], p["lessons"], p["speed"]["speed"]), (0, [], 1.4))
+        self.assertIn("speed 1.40× · 2.00 lessons/day, needed 1.43", self.run_cmd("today"))
+
+    def test_today_speed_is_per_plan_and_uses_its_deadline(self):
+        plan = dict(PLAN, deadline="2026-10-16")  # 6 lessons / 12 days = 0.5 needed per day
+        self.run_cmd("create", "deadline", "--stdin", stdin=json.dumps(plan))
+        self.run_cmd("done", "L01", "--plan", "py", "--score", "1")
+        for lid in ("L01", "L02"):
+            self.run_cmd("done", lid, "--plan", "deadline", "--score", "1")
+        plans = {p["slug"]: p for p in self.js("today", day="2026-10-06")["plans"]}
+        self.assertEqual(plans["py"]["speed"]["speed"], 0.7)
+        sp = plans["deadline"]["speed"]
+        self.assertEqual((sp["lessons_per_day"], sp["needed_per_day"], sp["speed"], sp["basis"]),
+                         (2.0, 0.5, 4.0, "deadline"))
+        self.assertIn("speed 4.00× · 2.00 lessons/day, needed 0.50 (by the deadline)",
+                      self.run_cmd("today", "--plan", "deadline"))
+        self.assertEqual(self.js("today", "--plan", "deadline")["plans"][0]["speed"], sp)
+
     def test_projected_finish_skips_rest_days(self):
         out = self.js("status", day="2026-10-05")["plans"][0]["pace"]
         # 6 lessons at 2/day: Mon, Tue, Wed
