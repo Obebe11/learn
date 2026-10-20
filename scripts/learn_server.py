@@ -57,6 +57,8 @@ Before running a session, call `learn_skill` with the method you need and follow
 `daily-lesson` (study / continue / answered a reminder), `study-plan` (new goal, progress, change the plan), \
 `teach` (how to explain anything). Every learner-visible fact still has to be taught well — the tools only keep the score. \
 Nothing counts until it is recorded: `learn_done`, `learn_card_add`, `learn_review_grade`. \
+At session start, show each selected plan's speed from `learn_today` with actual and needed lessons/day \
+(1.0x = on schedule); if speed is null, say there is not enough data yet. \
 Warm-up: `learn_today` only previews; issue each question with `learn_review_next`, then call \
 `learn_review_grade` immediately after the learner's reply. Never restart the warm-up after each lesson. \
 When the learner asks about progress or the map, show the picture from `learn_graph_image` next to the numbers from \
@@ -259,7 +261,9 @@ def load_skills():
 TOOLS = [
     Tool("learn_today",
          "Start every study session here: today's lessons (objective, check, key ideas), warm-up review cards that are due, "
-         "streak, pace and language/chat format. Graph plans mix tracks on purpose; call it again after learn_done because "
+         "streak, pace, speed and language/chat format. Show speed (average lessons/day divided by the needed average; "
+         "1.0x = on schedule) with actual/needed lessons/day in the session opener; null means not enough data yet. "
+         "Graph plans mix tracks on purpose; call it again after learn_done because "
          "lessons may unlock. Reviews are a read-only preview: issue each with learn_review_next; the daily budget "
          "is shared across chats and plans.",
          cli("today", opts=("plan", "track", "max_reviews")),

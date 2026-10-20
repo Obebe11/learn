@@ -173,6 +173,19 @@ class TestProtocol(Base):
 
 
 class TestSessionOverMcp(Base):
+    def test_today_exposes_speed_at_session_start(self):
+        self.create_plan()
+        self.assertIn("speed — · not enough data yet", self.tool("learn_today"))
+        self.assertIsNone(json.loads(self.tool("learn_today", {"json": True}))["plans"][0]["speed"])
+        self.tool("learn_done", {"lesson": "L01", "score": 1})
+        os.environ["LEARN_TODAY"] = "2026-10-06"
+        self.assertIn("speed 0.70× · 1.00 lessons/day, needed 1.43", self.tool("learn_today"))
+        data = json.loads(self.tool("learn_today", {"json": True}))
+        status = json.loads(self.tool("learn_status", {"json": True}))
+        self.assertEqual(data["plans"][0]["speed"], status["plans"][0]["pace"]["speed"])
+        skill = self.tool("learn_skill", {"name": "daily-lesson"})
+        self.assertIn("each selected plan's speed with actual and needed lessons/day", skill)
+
     def test_full_study_session(self):
         self.assertIn("created plan 'py'", self.create_plan())
         today = self.tool("learn_today")

@@ -332,6 +332,14 @@ def speed_report(plan, prog, today):
             "basis": "deadline" if deadline and parse_date(deadline) >= start else "pace"}
 
 
+def format_speed(sp):
+    if not sp or sp["speed"] is None:
+        return "speed — · not enough data yet"
+    return (f"speed {sp['speed']:.2f}× · {sp['lessons_per_day']:.2f} lessons/day, "
+            f"needed {sp['needed_per_day']:.2f}"
+            + (" (by the deadline)" if sp["basis"] == "deadline" else ""))
+
+
 def due_cards(plan_slug, prog, today, include_future=False):
     out = []
     for c in prog["cards"]:
@@ -875,8 +883,7 @@ def cmd_status(args):
                   f"  reviews due: {s['reviews_due']} of {s['cards']} cards"]
         sp = p["speed"]
         if sp and sp["speed"] is not None:
-            lines.insert(-1, f"  speed {sp['speed']:.2f}× · {sp['lessons_per_day']:.2f} lessons/day, "
-                             f"needed {sp['needed_per_day']:.2f}" + (" (by the deadline)" if sp["basis"] == "deadline" else ""))
+            lines.insert(-1, "  " + format_speed(sp))
         if nxt:
             lines.append(f"  next: {nxt['id']} {nxt['title']}")
         if G.graph_mode(plan):
@@ -911,6 +918,7 @@ def cmd_today(args):
         started = t >= start
         scheduled, quota = day_quota(plan, prog, t)
         pr = pace_report(plan, prog, t)
+        sp = speed_report(plan, prog, t)
         try:
             todo = G.day_plan(plan, prog, quota, iso(t), args.track) if quota else []
         except KeyError as e:
@@ -924,7 +932,7 @@ def cmd_today(args):
         data["plans"].append({"slug": slug, "title": plan["title"], "scheduled_today": scheduled, "state": state,
                               "starts_on": iso(start), "graph": gm,
                               "quota": quota, "done_today": done_today, "behind": pr["behind"],
-                              "projected_finish": pr["projected_finish"],
+                              "projected_finish": pr["projected_finish"], "speed": sp,
                               "lessons": [dict(l, status=lesson_state(prog, l["id"]),
                                                attempts=prog["lessons"].get(l["id"], {}).get("attempts", 0),
                                                track=units[l["id"]], track_title=utitle[units[l["id"]]],
@@ -939,7 +947,7 @@ def cmd_today(args):
         else:
             head += "rest day"
         head += " =="
-        lines += ["", head]
+        lines += ["", head, "  " + format_speed(sp)]
         if gm and scheduled:
             lines.append("  🗺 graph plan: lessons come from different tracks on purpose (interleaving). "
                          "After each `learn done`, re-run `learn today` — new lessons may unlock.")
