@@ -18,6 +18,7 @@ Run `learn <command> -h` for details.
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -37,8 +38,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # find learn_graph.py 
 import learn_graph as G  # noqa: E402
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-# Leitner boxes 1..7: days until the next review after a successful recall.
-INTERVALS = [1, 3, 7, 14, 30, 60, 120]
+# Retained only for migrating old cards and their compatibility `box` field.
+LEGACY_INTERVALS = [1, 3, 7, 14, 30, 60, 120]
+MAX_REVIEW_INTERVAL = 36500  # practical 100-year ceiling, not part of SM-2
 KINDS = {"lesson", "review", "milestone", "junction"}
 CHAT_FORMATS = ("plain", "rich")  # rich = Telegram rich messages (tables, LaTeX, task lists, details)
 CONFIG_KEYS = {"language": None, "timezone": None, "chat_format": CHAT_FORMATS}
@@ -339,6 +341,78 @@ def due_cards(plan_slug, prog, today, include_future=False):
             out.append(dict(c, plan=plan_slug))
     out.sort(key=lambda c: (c["due"], c["id"]))
     return out
+
+
+def review_state(card, events=(), ref=None):
+    """SM-2 state, or a lazy migration that leaves existing due dates alone."""
+    if card.get("srs", {}).get("algorithm") == "sm2":
+        return dict(card["srs"])
+    history = [e for e in events if e["type"] == "review" and e["id"] == ref]
+    successes = 0
+    for event in reversed(history):
+        if event["result"] != "pass":
+            break
+        successes += 1
+    if not history:
+        successes = max(0, card.get("box", 1) - 1)
+    interval = (max(1, (parse_date(card["due"]) - parse_date(card["last"])).days)
+                if card.get("last") else LEGACY_INTERVALS[min(card.get("box", 1), 7) - 1])
+    return {"algorithm": "sm2", "ease": 2.5, "interval": interval, "successes": successes}
+
+
+def schedule_review(state, quality):
+    """SM-2 day intervals: https://super-memory.org/archive/english/ol/sm2.htm
+
+    Use the PREVIOUS EF for this interval, then update it. On a failed recall,
+    reset the sequence, retaining EF (step 6 of the original specification).
+    Same-day corrective practice is handled by the tutor, not another grade.
+    """
+    ease, successes = state["ease"], state["successes"]
+    if quality < 3:
+        interval, successes = 1, 0
+    else:
+        interval = (1 if successes == 0 else 6 if successes == 1
+                    else math.ceil(state["interval"] * ease))
+        successes += 1
+        ease = max(1.3, round(ease + 0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02), 8))
+    return {"algorithm": "sm2", "ease": ease, "interval": min(MAX_REVIEW_INTERVAL, interval),
+            "successes": successes}
+
+
+def warmup_reviews(st, plans, limit):
+    """Read-only preview of the remaining daily warm-up, shared by all chats.
+
+    Issuing a question and grading recall are different actions. An interrupted
+    question must not lead every new session, or count as a successful recall.
+    Count legacy grades too, so old clients share the same daily budget.
+    """
+    if not 0 <= limit <= 50:
+        raise LearnError("max-reviews must be between 0 and 50")
+    today = iso(st.today)
+    seen = set()
+    by_lesson = {}
+    selected = {slug: (plan, prog) for slug, plan, prog in plans}
+    for slug in st.slugs():
+        _, prog = selected[slug] if slug in selected else st.load(slug)
+        for card in prog["cards"]:
+            if card.get("presented") == today or card.get("last") == today:
+                seen.add((slug, card["id"]))
+                group = (slug, card["lesson"])
+                by_lesson[group] = by_lesson.get(group, 0) + 1
+    candidates = [c for slug, _, prog in plans for c in due_cards(slug, prog, st.today)
+                  if (slug, c["id"]) not in seen]
+    shown = []
+    for _ in range(min(max(0, limit - len(seen)), len(candidates))):
+        # Mix lessons/plans; within each topic prefer least recently seen cards
+        # before using due date and ID to break ties. Unanswered cards rotate.
+        card = min(candidates, key=lambda c: (by_lesson.get((c["plan"], c["lesson"]), 0),
+                                             max(c.get("presented", ""), c.get("last", "")),
+                                             c["due"], c["plan"], c["id"]))
+        shown.append(card)
+        candidates.remove(card)
+        group = (card["plan"], card["lesson"])
+        by_lesson[group] = by_lesson.get(group, 0) + 1
+    return shown, len(seen)
 
 
 def activity_dates(store):
@@ -891,15 +965,21 @@ def cmd_today(args):
         elif scheduled and not todo:
             lines.append("  nothing unlocked yet in this track filter — finish a prerequisite or pick another track"
                          if args.track else "  nothing unlocked right now — finish the lessons in progress (retry) first")
-    all_due.sort(key=lambda c: (c["due"], c["plan"], c["id"]))
-    shown = all_due[: args.max_reviews]
+    shown, seen_today = warmup_reviews(st, plans, args.max_reviews)
     data["reviews"] = shown
     data["reviews_due_total"] = len(all_due)
+    data["reviews_today"] = seen_today
+    data["reviews_remaining"] = len(shown)
     if shown:
-        lines += ["", f"🔁 Warm-up reviews ({len(shown)} of {len(all_due)} due) — ask closed-book, then `learn review grade`:"]
+        lines += ["", f"🔁 Warm-up preview ({len(shown)} remaining today, {len(all_due)} due) — "
+                  "use `learn review next` to issue ONE question, then `learn review grade` immediately after the reply:"]
         for c in shown:
-            lines += [f"  {c['plan']}/{c['id']} (from {c['lesson']}, box {c['box']}, due {c['due']})",
+            lines += [f"  {c['plan']}/{c['id']} (from {c['lesson']}, due {c['due']})",
                       f"      Q: {c['q']}", f"      A: {c['a']}"]
+    elif all_due and args.max_reviews == 0:
+        lines += ["", "warm-up omitted for this lesson refresh"]
+    elif all_due:
+        lines += ["", "warm-up finished for today — continue the lessons; the backlog does not restart the warm-up"]
     elif not any(p["quota"] for p in data["plans"]):
         lines += ["", "nothing due — enjoy the rest ☕"]
     emit(args, data, "\n".join(lines))
@@ -1061,13 +1141,14 @@ def cmd_card_add(args):
         items = [{"q": args.q, "a": args.a}]
     if not isinstance(items, list) or not all(isinstance(i, dict) and i.get("q") and i.get("a") for i in items):
         raise LearnError("cards must be a list of objects with non-empty 'q' and 'a'")
-    first_due = st.today + timedelta(days=INTERVALS[0])
+    first_due = st.today + timedelta(days=1)
     new = []
     for i in items:
         cid = f"C{prog['next_card']:03d}"
         prog["next_card"] += 1
         card = {"id": cid, "lesson": args.lesson, "q": i["q"], "a": i["a"], "box": 1, "due": iso(first_due),
-                "reps": 0, "lapses": 0, "created": iso(st.today)}
+                "reps": 0, "lapses": 0, "created": iso(st.today),
+                "srs": {"algorithm": "sm2", "ease": 2.5, "interval": 1, "successes": 0}}
         prog["cards"].append(card)
         new.append(cid)
     st.save(slug, plan, prog)
@@ -1088,9 +1169,30 @@ def cmd_review_due(args):
         rows += due_cards(slug, prog, st.today, include_future=args.all)
     rows.sort(key=lambda c: (c["due"], c["plan"], c["id"]))
     rows = rows[: args.limit]
-    text = "\n".join(f"{c['plan']}/{c['id']} box{c['box']} due {c['due']}\n   Q: {c['q']}\n   A: {c['a']}" for c in rows) \
+    text = "\n".join(f"{c['plan']}/{c['id']} due {c['due']}\n   Q: {c['q']}\n   A: {c['a']}" for c in rows) \
         or "no reviews due"
     emit(args, rows, text)
+
+
+def cmd_review_next(args):
+    st = Store(args)
+    plans = st.select(args.plan)
+    shown, seen_today = warmup_reviews(st, plans, args.max_reviews)
+    card = shown[0] if shown else None
+    if card:
+        slug = card["plan"]
+        _, plan, prog = next(p for p in plans if p[0] == slug)
+        stored = next(c for c in prog["cards"] if c["id"] == card["id"])
+        stored["presented"] = iso(st.today)
+        st.save(slug, plan, prog)
+        card["presented"] = iso(st.today)
+    data = {"date": iso(st.today), "card": card,
+            "reviews_today": seen_today + bool(card), "reviews_remaining": max(0, len(shown) - 1)}
+    text = (f"{card['plan']}/{card['id']} (from {card['lesson']}, due {card['due']})\n"
+            f"Q: {card['q']}\nA (tutor only): {card['a']}\n"
+            "Ask closed-book, wait for the reply, then record `learn review grade` before another question."
+            if card else "no warm-up reviews left today — continue the lessons")
+    emit(args, data, text)
 
 
 def cmd_review_grade(args):
@@ -1100,19 +1202,33 @@ def cmd_review_grade(args):
     card = next((c for c in prog["cards"] if c["id"] == cid), None)
     if not card:
         raise LearnError(f"no such card: {cid}")
-    ok = args.result == "pass"
+    quality = args.quality if args.quality is not None else (4 if args.result == "pass" else 1)
+    if (quality >= 3) != (args.result == "pass"):
+        raise LearnError("quality 3..5 requires pass; quality 0..2 requires fail")
+    if card.get("retired"):
+        raise LearnError(f"card {cid} is retired")
+    if card.get("last") == iso(st.today):
+        print(f"{slug}/{cid}: already graded today — schedule unchanged (due {card['due']})")
+        return
+    if parse_date(card["due"]) > st.today:
+        raise LearnError(f"card {cid} is not due until {card['due']} — early practice does not reschedule recall")
+    state = schedule_review(review_state(card, prog["events"], f"{slug}/{cid}"), quality)
+    ok = quality >= 3
     card["reps"] += 1
-    if ok:
-        card["box"] = min(card["box"] + 1, len(INTERVALS))
-    else:
-        card["box"] = 1
+    if not ok:
         card["lapses"] += 1
-    days = INTERVALS[card["box"] - 1]
+    card["srs"] = state
+    card["box"] = min(state["successes"] + 1, len(LEGACY_INTERVALS))  # legacy readers only
+    days = min(state["interval"], (date.max - st.today).days)
+    card["srs"]["interval"] = days
     card["due"] = iso(st.today + timedelta(days=days))
     card["last"] = iso(st.today)
-    prog["events"].append({"date": iso(st.today), "type": "review", "id": f"{slug}/{cid}", "result": args.result})
+    prog["events"].append({"date": iso(st.today), "type": "review", "id": f"{slug}/{cid}",
+                           "result": args.result, "quality": quality, "scheduler": "sm2",
+                           "interval": days, "ease": state["ease"]})
     st.save(slug, plan, prog)
-    print(f"{slug}/{cid}: {'✓' if ok else '✗'} → box {card['box']}, next review in {days}d ({card['due']})")
+    print(f"{slug}/{cid}: {'✓' if ok else '✗'} → SM-2 q{quality}, EF {state['ease']:g}, "
+          f"next review in {days}d ({card['due']})")
 
 
 def cmd_card_retire(args):
@@ -1164,8 +1280,10 @@ def cmd_nudge(args):
     lang = args.language or st.cfg.get("language", "en")
     ru = lang.lower().startswith("ru")
     t = st.today
-    todo, due_total, behind = [], 0, 0
-    for slug, plan, prog in st.active():
+    plans = st.active()
+    todo, behind = [], 0
+    due_total = len(warmup_reviews(st, plans, 6)[0])
+    for slug, plan, prog in plans:
         scheduled = is_scheduled(plan, t) and t >= effective_start(plan, prog)
         if scheduled:
             quota = max(0, plan["pace"]["lessons_per_day"] - len(lesson_events_on(prog, t)))
@@ -1173,7 +1291,6 @@ def cmd_nudge(args):
             units = G.unit_of(plan)
             for l in G.day_plan(plan, prog, quota, iso(t)):
                 todo.append((slug, dict(l, tag=utitle[units[l["id"]]] if G.graph_mode(plan) else "")))
-        due_total += len(due_cards(slug, prog, t))
         behind = max(behind, pace_report(plan, prog, t)["behind"])
     if not todo and not due_total:
         return
@@ -1309,7 +1426,7 @@ def build_parser():
     add("status", cmd_status, "progress, pace and projected finish")
 
     p = add("today", cmd_today, "today's lessons + warm-up reviews (start every session here)")
-    p.add_argument("--max-reviews", type=int, default=6, help="cap warm-up reviews (default 6)")
+    p.add_argument("--max-reviews", type=int, default=6, help="daily warm-up budget across chats and plans (0..50, default 6)")
     p.add_argument("--track", help="graph plans: only lessons from this track (unit id) — e.g. 'today I want AI'")
 
     p = add("next", cmd_next, "upcoming lessons regardless of daily quota")
@@ -1358,6 +1475,10 @@ def build_parser():
     p.set_defaults(fn=cmd_card_retire)
 
     rev = sub.add_parser("review", help="spaced reviews").add_subparsers(dest="sub", required=True, metavar="action")
+    p = rev.add_parser("next", parents=[common], help="issue one due question and remember its presentation")
+    p.add_argument("--plan")
+    p.add_argument("--max-reviews", type=int, default=6, help="daily warm-up budget across chats and plans (0..50, default 6)")
+    p.set_defaults(fn=cmd_review_next)
     p = rev.add_parser("due", parents=[common], help="list due cards")
     p.add_argument("--plan")
     p.add_argument("--all", action="store_true", help="include not-yet-due cards")
@@ -1366,6 +1487,7 @@ def build_parser():
     p = rev.add_parser("grade", parents=[common], help="record recall result")
     p.add_argument("card", help="C007 or slug/C007")
     p.add_argument("result", choices=["pass", "fail"])
+    p.add_argument("--quality", type=int, choices=range(6), help="SM-2 recall quality 0..5 (pass defaults to 4, fail to 1)")
     p.add_argument("--plan")
     p.set_defaults(fn=cmd_review_grade)
 

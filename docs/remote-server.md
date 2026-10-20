@@ -121,7 +121,7 @@ GET разрешён только для инструментов, которы�
 | Группа | Инструменты |
 |---|---|
 | Занятие | `learn_today`, `learn_next`, `learn_done`, `learn_skip`, `learn_graph` |
-| Повторения | `learn_card_add`, `learn_card_retire`, `learn_review_due`, `learn_review_grade` |
+| Повторения | `learn_card_add`, `learn_card_retire`, `learn_review_due`, `learn_review_next`, `learn_review_grade` |
 | Прогресс | `learn_status`, `learn_graph_image`, `learn_plans`, `learn_week`, `learn_nudge` |
 | Планы | `learn_create` (план — JSON-объект в аргументе; `update: true` сохраняет прогресс), `learn_show`, `learn_validate`, `learn_start`, `learn_set_plan_status` |
 | Профиль и настройки | `learn_profile_get`, `learn_profile_set`, `learn_config_get`, `learn_config_set` |

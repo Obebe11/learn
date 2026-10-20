@@ -11,18 +11,18 @@ One session = **warm-up reviews → 1–2 lessons → wrap-up**, about 40–50 m
 
 1. `learn sync` (ignore "not a git repo"; if it reports a conflict, tell the learner and continue read-only). *With `learn_*` MCP tools instead of a shell (remote server): skip this — there is one copy of the data; every `learn <cmd>` below is the tool `learn_<cmd>`, and `profile.md`/`config.json` are `learn_profile_get`/`learn_config_get`.*
 2. Read `<data dir>/profile.md` and `config.json` → lesson language, pace preferences. Speak that language.
-3. `learn today` (add `--plan <slug>` if several plans and the learner named one). It lists today's lessons, any warm-up reviews, streak and pace.
+3. `learn today` (add `--plan <slug>` if several plans and the learner named one). It lists today's lessons, a read-only preview of remaining warm-up reviews, streak and pace. Use `learn review next` to issue each actual question.
    - No plan yet → hand over to `study-plan`.
    - Rest day / quota done → only offer reviews; offer one bonus lesson (`learn next`) *only* if asked.
 4. One-line opener: streak, today's plan (e.g. "2 lessons + 4 reviews, ≈ 45 min"). If they've been away 4+ days: no guilt, no catch-up speech — "welcome back, we start light".
-5. If a lesson was started earlier but never recorded (it won't appear as done), start it again with a 2-sentence recap.
+5. Resume an unfinished lesson with a 2-sentence recap, using its saved note and the current conversation to continue at the unfinished step. Do not restart its opening questions or the warm-up from chat history.
 
 ### Graph plans (several tracks): jumping between topics on purpose
 
 If `learn today` says **graph plan**, the plan is a map of parallel *tracks* (Python, AI, …) joined by ⭐ *junctions* — lessons that need several skills at once.
 
 - Today's lessons come from **different tracks** on purpose. Teach them in the order listed; between topics give a one-line bridge ("switching gears: from Python to AI — notice how X from before shows up again"). Mixing topics is not a distraction: the repeated "what was this again?" effort is part of why it sticks. Say this once, briefly, the first time.
-- **After every `learn done`, run `learn today` again**: finishing a lesson can unlock new ones (including a junction), and the next pick accounts for what you taught today.
+- **After every `learn done`, run `learn today --max-reviews 0` again**: finishing a lesson can unlock new ones (including a junction). Continue lessons; do not start another warm-up.
 - If a lesson ends as **retry**, don't teach lessons that depend on it today (they're locked until it passes).
 - **The learner can steer.** "Today I only want AI" → `learn today --track AI` (track = unit id as shown by `learn graph`). "What can I study?" / "show the map" → `learn graph` (chat: text in a code block; `chat_format rich`: `--format md`; if the gateway can send images and `rsvg-convert` exists: `--format png` and send the path, e.g. Hermes `MEDIA:<path>`; remote server: `learn_graph_image` returns the picture itself). Any *ready* lesson may be taken out of order: `learn done <id>`; a locked one needs its prerequisites first (`--force` only if they clearly already know them).
 - **Junction lessons (⭐)** are the payoff. Start with a short recall of the prerequisite lessons it lists (use their review cards), then give a real task that needs *both* skills; grade it against its `check`. When one unlocks, say so — "you now have both skills needed for J1".
@@ -30,11 +30,15 @@ If `learn today` says **graph plan**, the plan is a map of parallel *tracks* (Py
 
 ## 1. Warm-up: retrieval before anything new (≈ 5 min)
 
-For each due card from `learn today` (cap ~6; pull more only if asked):
+Use the server's daily budget (default 6 across all chats/plans), not six more cards at every lesson start:
 
-1. Ask the question **closed-book** — never show the answer first. One card per message.
-2. Judge the reply: lenient on wording, strict on substance. Partially right counts as `fail` unless the missing part is minor.
-3. Reveal the stored answer in one line, add a one-sentence re-explanation if wrong, then record: `learn review grade <plan>/<card> pass|fail`.
+1. Call `learn review next` for ONE question immediately before asking it. It saves the presentation separately from recall; `learn today` / `learn review due` are only previews. Never prefetch several questions. A null `card` means stop the warm-up and teach the lesson, even if a backlog remains. Increase `--max-reviews` only if the learner asks for extra reviews.
+2. Ask the returned question **closed-book** — never show its stored answer first. One card per message, then wait. Where possible use a fresh equivalent example testing the same fact, with the same correct reasoning; do not change what the card tests or invent new card IDs for wording variants.
+3. Judge the first unaided reply: lenient on wording, strict on substance. Assign SM-2 `quality`: 5 = complete and confident; 4 = correct with minor hesitation; 3 = correct with substantial difficulty; 2 = incorrect but recognised after explanation; 1 = incorrect, partial recognition; 0 = no recall. Do not infer difficulty from chat response time. Missing a material part or needing an answer-revealing hint means 0..2, not a pass.
+4. **Record immediately, before another question or lesson**: `learn review grade <plan>/<card> pass|fail --quality <0..5>` (3..5 = pass, 0..2 = fail). Check success; only then say it was saved. `pass|fail` without quality remains compatible (4/1). The scheduler calculates each card's next due date from its own interval, successful-recall streak and ease factor; never set dates from chat history.
+5. Reveal the answer in one line; if wrong, briefly repair the gap. A corrected answer after seeing the solution is practice, not another scheduled grade. Do not loop a failed question on every lesson start; its next scheduled review is tomorrow. Repeat from step 1 until `card` is null or the learner wants to move on.
+
+An issued but unanswered question stays ungraded and keeps its due date; it is suppressed for the rest of that day and rotates back later. If the learner returns to answer the pending question, grade that card before issuing another. A new chat or `learn today` call must not reset the daily budget. Do not pull future cards or use `review due --all` to fill an empty warm-up.
 
 Why first: pulling answers out of memory *before* re-exposure is what builds retention; it also tells you what the learner still holds before you build on it.
 

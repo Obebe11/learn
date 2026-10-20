@@ -57,6 +57,8 @@ Before running a session, call `learn_skill` with the method you need and follow
 `daily-lesson` (study / continue / answered a reminder), `study-plan` (new goal, progress, change the plan), \
 `teach` (how to explain anything). Every learner-visible fact still has to be taught well — the tools only keep the score. \
 Nothing counts until it is recorded: `learn_done`, `learn_card_add`, `learn_review_grade`. \
+Warm-up: `learn_today` only previews; issue each question with `learn_review_next`, then call \
+`learn_review_grade` immediately after the learner's reply. Never restart the warm-up after each lesson. \
 When the learner asks about progress or the map, show the picture from `learn_graph_image` next to the numbers from \
 `learn_status`."""
 
@@ -258,10 +260,11 @@ TOOLS = [
     Tool("learn_today",
          "Start every study session here: today's lessons (objective, check, key ideas), warm-up review cards that are due, "
          "streak, pace and language/chat format. Graph plans mix tracks on purpose; call it again after learn_done because "
-         "lessons may unlock.",
+         "lessons may unlock. Reviews are a read-only preview: issue each with learn_review_next; the daily budget "
+         "is shared across chats and plans.",
          cli("today", opts=("plan", "track", "max_reviews")),
          {"plan": PLAN, "track": TRACK, "max_reviews": {"type": "integer", "minimum": 0, "maximum": 50,
-                                                         "description": "cap on warm-up reviews (default 6)"}},
+                                                         "description": "daily warm-up budget across chats and plans (default 6)"}},
          readonly=True, structured=True),
     Tool("learn_status", "Progress per plan: bar, pace (behind/ahead), speed (average lessons/day so far divided by the "
                          "average the plan needs; 1.0 = on schedule), projected finish date, reviews due, next lesson.",
@@ -326,9 +329,23 @@ TOOLS = [
          cli(["review", "due"], opts=("plan", "limit"), flags=("all",)),
          {"plan": PLAN, "all": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
          readonly=True, structured=True),
-    Tool("learn_review_grade", "Record the result of a closed-book review: pass or fail. Reschedules the card.",
-         cli(["review", "grade"], opts=("plan",), pos=("card", "result")),
-         {"card": CARD, "result": {"type": "string", "enum": ["pass", "fail"]}, "plan": PLAN}, required=("card", "result")),
+    Tool("learn_review_next", "Issue ONE due warm-up question and persist its presentation before asking it. "
+         "Never returns a card already presented or graded today; rotates topics and respects a shared daily budget. "
+         "Does not grade or reschedule recall. Ask closed-book, wait, then call learn_review_grade immediately. "
+         "A null card means the warm-up is over: continue the lessons.",
+         cli(["review", "next"], opts=("plan", "max_reviews")),
+         {"plan": PLAN, "max_reviews": {"type": "integer", "minimum": 0, "maximum": 50,
+                                       "description": "daily warm-up budget across chats and plans (default 6)"}},
+         structured=True),
+    Tool("learn_review_grade", "Record closed-book recall immediately after the reply, before another question. "
+         "SM-2 quality: 5 perfect, 4 correct, 3 correct but hard; 0..2 incorrect. Defaults: pass=4, fail=1. "
+         "Calculates the next interval per card. Duplicate same-day grades do not advance it; early reviews are refused. "
+         "Never claim it is recorded until this succeeds.",
+         cli(["review", "grade"], opts=("plan", "quality"), pos=("card", "result")),
+         {"card": CARD, "result": {"type": "string", "enum": ["pass", "fail"]}, "plan": PLAN,
+          "quality": {"type": "integer", "minimum": 0, "maximum": 5,
+                      "description": "SM-2 quality 0..5; 3..5 requires pass, 0..2 requires fail"}},
+         required=("card", "result")),
     Tool("learn_create", "Create a plan from a plan object (see the study-plan skill), or replace one with update=true "
                          "while keeping all progress. Validates and returns every problem at once.",
          cli("create", flags=("update",), pos=("slug",), fixed=("--stdin",), stdin=lambda a: json.dumps(a["plan"], ensure_ascii=False)),
