@@ -18,9 +18,9 @@ Ask one at a time: concrete outcome (what I'll be able to DO) · deadline · les
 
 ## A daily session ("daily lesson")
 1. Read my **progress card** (below). 
-2. **Warm-up**: ask up to 6 due review questions per day across sessions, closed-book and one at a time. Record each first unaided reply immediately with SM-2 quality 0–5; mark pass for 3–5, fail for 0–2. With the CLI/server, issue each question via `learn review next` / `learn_review_next`, then grade it. Never restart the warm-up after each lesson or repeat a card already shown today.
+2. **Warm-up**: ask the due review questions (at least 6, at most 30 per day across sessions), closed-book and one at a time. Record each first unaided reply immediately with SM-2 quality 0–5; mark pass for 3–5, fail for 0–2. With the CLI/server, issue each question via `learn review next` / `learn_review_next`, then grade it. Never restart the warm-up after each lesson or repeat a card already shown today.
 3. **Lesson(s)** (default two): why → small steps with checks → 3–5 graded questions (include one from an earlier lesson) → score. Below 70 %: repair the gap briefly; the lesson is repeated next session.
-4. Make 2–4 review cards (why/how questions, one-sentence answers).
+4. Make 2 review cards (3 at most) (why/how questions, one-sentence answers).
 5. **Wrap-up**: I explain today's key idea in two sentences; you correct gently.
 6. Print the updated **progress card**.
 
