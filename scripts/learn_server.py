@@ -181,6 +181,9 @@ PLAN = s("plan slug; omit when there is a single active plan", pattern=SLUG, max
 LESSON = s("lesson id, e.g. L07", pattern=IDENT, maxLength=64)
 TRACK = s("graph plans: only this track (unit id)", pattern=IDENT, maxLength=64)
 CARD = s("card id C007 or plan/C007", pattern=IDENT, maxLength=140)
+BUDGET_DESC = ("daily warm-up budget across chats and plans; omit to use config daily_reviews "
+               "(default auto: the day's due load, 6..30). Raise it only when the learner asks")
+CONFIG_KEYS = ["language", "timezone", "chat_format", "daily_reviews"]
 
 
 def cli(cmd, opts=(), flags=(), pos=(), fixed=(), stdin=None):
@@ -264,11 +267,12 @@ TOOLS = [
          "streak, pace, speed and language/chat format. Show speed (average lessons/day divided by the needed average; "
          "1.0x = on schedule) with actual/needed lessons/day in the session opener; null means not enough data yet. "
          "Graph plans mix tracks on purpose; call it again after learn_done because "
-         "lessons may unlock. Reviews are a read-only preview: issue each with learn_review_next; the daily budget "
+         "lessons may unlock. Each lesson carries its last score and note (where an interrupted lesson stopped): "
+         "resume from them. Reviews are a read-only preview: issue each with learn_review_next; the daily budget "
          "is shared across chats and plans.",
          cli("today", opts=("plan", "track", "max_reviews")),
          {"plan": PLAN, "track": TRACK, "max_reviews": {"type": "integer", "minimum": 0, "maximum": 50,
-                                                         "description": "daily warm-up budget across chats and plans (default 6)"}},
+                                                         "description": BUDGET_DESC}},
          readonly=True, structured=True),
     Tool("learn_status", "Progress per plan: bar, pace (behind/ahead), speed (average lessons/day so far divided by the "
                          "average the plan needs; 1.0 = on schedule), projected finish date, reviews due, next lesson.",
@@ -303,7 +307,8 @@ TOOLS = [
           "scale": {"type": "number", "minimum": 1, "maximum": 4,
                     "description": "exact png pixel density (default: fit a phone)"}},
          readonly=True),
-    Tool("learn_week", "Last-7-days summary: lessons passed, average score, reviews recalled, active days.",
+    Tool("learn_week", "Last-7-days summary: lessons passed, average score, reviews recalled, average recall quality, "
+                       "long-term recall (cards reviewed after a 21+ day gap), new cards, leeches, active days.",
          cli("week"), readonly=True, structured=True),
     Tool("learn_show", "Print a plan: its JSON (to edit and send back via learn_create with update) or, with md, "
                        "the rendered PLAN.md checklist.",
@@ -319,7 +324,14 @@ TOOLS = [
          required=("lesson",), structured=True),
     Tool("learn_skip", "Drop a lesson from the plan's remaining work (it counts as skipped, not done).",
          cli("skip", opts=("plan",), pos=("lesson",)), {"lesson": LESSON, "plan": PLAN}, required=("lesson",)),
-    Tool("learn_card_add", "Add 2-4 spaced-repetition review cards for a lesson (atomic, why/how-oriented, answerable in a sentence).",
+    Tool("learn_note", "Checkpoint an unfinished lesson before the chat may end: where it stopped and what was shaky. "
+                       "Not a completion; learn_today shows it next time so the lesson resumes there.",
+         cli("note", opts=("plan", "text"), pos=("lesson",)),
+         {"lesson": LESSON, "plan": PLAN, "text": s("one line, e.g. 'stopped after step 3; mixes up X and Y'",
+                                                      minLength=1, maxLength=500)},
+         required=("lesson", "text")),
+    Tool("learn_card_add", "Add 2 (at most 3) spaced-repetition review cards for a lesson (atomic, why/how-oriented, "
+                           "answerable in a sentence). Every card costs several reviews a month, for months.",
          cli(["card", "add"], opts=("plan", "lesson"), fixed=("--stdin",), stdin=lambda a: json.dumps(a["cards"], ensure_ascii=False)),
          {"lesson": LESSON, "plan": PLAN,
           "cards": {"type": "array", "minItems": 1, "maxItems": 20,
@@ -329,6 +341,11 @@ TOOLS = [
          required=("lesson", "cards")),
     Tool("learn_card_retire", "Stop reviewing a card.",
          cli(["card", "retire"], opts=("plan",), pos=("card",)), {"card": CARD, "plan": PLAN}, required=("card",)),
+    Tool("learn_card_edit", "Rewrite a card's question and/or answer (e.g. a leech, or an ambiguous card). "
+                            "Keeps its id, schedule and history.",
+         cli(["card", "edit"], opts=("plan", "q", "a"), pos=("card",)),
+         {"card": CARD, "plan": PLAN, "q": s("new question", minLength=1, maxLength=1000),
+          "a": s("new answer", minLength=1, maxLength=2000)}, required=("card",), idempotent=True),
     Tool("learn_review_due", "List review cards that are due (or all, with all=true).",
          cli(["review", "due"], opts=("plan", "limit"), flags=("all",)),
          {"plan": PLAN, "all": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
@@ -339,7 +356,7 @@ TOOLS = [
          "A null card means the warm-up is over: continue the lessons.",
          cli(["review", "next"], opts=("plan", "max_reviews")),
          {"plan": PLAN, "max_reviews": {"type": "integer", "minimum": 0, "maximum": 50,
-                                       "description": "daily warm-up budget across chats and plans (default 6)"}},
+                                       "description": BUDGET_DESC}},
          structured=True),
     Tool("learn_review_grade", "Record closed-book recall immediately after the reply, before another question. "
          "SM-2 quality: 5 perfect, 4 correct, 3 correct but hard; 0..2 incorrect. Defaults: pass=4, fail=1. "
@@ -370,12 +387,13 @@ TOOLS = [
     Tool("learn_profile_set", "Replace the learner profile with the full new text (read it first, keep what is still true).",
          cli("profile", fixed=("--stdin",), stdin=lambda a: a["content"]),
          {"content": s("complete new profile.md, Markdown", minLength=1, maxLength=65536)}, required=("content",), idempotent=True),
-    Tool("learn_config_get", "Read the config (language, timezone, chat_format), or one key.",
+    Tool("learn_config_get", "Read the config (language, timezone, chat_format, daily_reviews), or one key.",
          cli("config", pos=("key",)),
-         {"key": {"type": "string", "enum": ["language", "timezone", "chat_format"]}}, readonly=True, structured=True),
-    Tool("learn_config_set", "Set language (e.g. ru), timezone (IANA, e.g. Europe/Moscow) or chat_format (plain|rich).",
+         {"key": {"type": "string", "enum": CONFIG_KEYS}}, readonly=True, structured=True),
+    Tool("learn_config_set", "Set language (e.g. ru), timezone (IANA, e.g. Europe/Moscow), chat_format (plain|rich) "
+                             "or daily_reviews (auto, or 0..50 warm-up cards a day).",
          cli("config", pos=("key", "value")),
-         {"key": {"type": "string", "enum": ["language", "timezone", "chat_format"]},
+         {"key": {"type": "string", "enum": CONFIG_KEYS},
           "value": s("new value", pattern=r"^[A-Za-z0-9_/+][A-Za-z0-9_/+.-]*$", maxLength=64)},
          required=("key", "value"), idempotent=True),
     Tool("learn_nudge", "The daily reminder text, no LLM needed. Empty output means there is nothing to remind about.",

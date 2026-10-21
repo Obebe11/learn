@@ -329,6 +329,10 @@ class TestSm2Formula(unittest.TestCase):
 
 
 class TestWarmup(Base):
+    def setUp(self):
+        super().setUp()
+        self.run_cmd("config", "daily_reviews", "6")  # a fixed budget; auto is tested in TestReviewLoad
+
     def add_cards(self, lesson, count):
         self.run_cmd("card", "add", "--lesson", lesson, "--stdin",
                      stdin=json.dumps([{"q": f"{lesson}-{i}", "a": "a"} for i in range(count)]))
@@ -387,6 +391,143 @@ class TestWarmup(Base):
         self.assertEqual(self.js("week")["plans"][0]["reviews"], 0)
         self.assertEqual(self.js("today")["streak"], 0)
         self.assertEqual(self.run_cmd("nudge"), "")
+
+
+class TestReviewLoad(Base):
+    def add_cards(self, lesson, count):
+        self.run_cmd("card", "add", "--lesson", lesson, "--stdin",
+                     stdin=json.dumps([{"q": f"{lesson}-{i}", "a": "a"} for i in range(count)]))
+
+    def test_auto_budget_follows_the_days_load_and_stays_put_while_grading(self):
+        self.add_cards("L01", 9)
+        self.assertEqual(self.run_cmd("config", "daily_reviews").strip(), "auto")
+        today = self.js("today", day="2026-10-06")
+        self.assertEqual((today["reviews_budget"], today["reviews_load"], len(today["reviews"])), (9, 9, 9))
+        for _ in range(4):
+            card = self.js("review", "next")["card"]
+            self.run_cmd("review", "grade", f"py/{card['id']}", "pass")
+        today = self.js("today")
+        self.assertEqual((today["reviews_budget"], today["reviews_today"], len(today["reviews"])), (9, 4, 5))
+        self.assertNotIn("review backlog", self.run_cmd("today"))
+
+    def test_auto_budget_has_a_floor_and_a_ceiling_and_warns_about_backlog(self):
+        self.add_cards("L01", 2)
+        self.assertEqual(self.js("today", day="2026-10-06")["reviews_budget"], 6)
+        self.add_cards("L02", 40)
+        today = self.js("today", day="2026-10-07")
+        self.assertEqual((today["reviews_budget"], today["reviews_load"], len(today["reviews"])), (30, 42, 30))
+        self.assertIn("review backlog: 42 due today, daily budget 30", self.run_cmd("today"))
+        self.assertIn("review backlog", self.run_cmd("status"))
+        self.assertEqual(self.js("status")["reviews"], {"budget": 30, "load": 42})
+        self.assertNotIn("review backlog", self.run_cmd("today", "--max-reviews", "0"))
+
+    def test_config_budget_overrides_auto_and_is_validated(self):
+        self.add_cards("L01", 9)
+        self.run_cmd("config", "daily_reviews", "4")
+        self.assertEqual(self.js("today", day="2026-10-06")["reviews_budget"], 4)
+        self.assertEqual(json.loads((Path(self.home) / "config.json").read_text())["daily_reviews"], 4)
+        self.assertEqual(self.js("today", "--max-reviews", "7")["reviews_budget"], 7)
+        for bad in ("51", "-1", "lots"):
+            self.assertIn("between 0 and 50", self.run_cmd("config", "daily_reviews", bad, expect=1))
+        self.run_cmd("config", "daily_reviews", "auto")
+        self.assertEqual(self.js("today")["reviews_budget"], 9)
+
+    def test_nudge_counts_the_auto_budget(self):
+        self.add_cards("L01", 8)
+        self.assertIn("8 повторений", self.run_cmd("nudge", day="2026-10-10"))  # rest day: reviews only
+
+    def test_confident_overdue_recall_earns_a_longer_interval(self):
+        self.assertEqual(learn.schedule_review({"ease": 2.5, "interval": 6, "successes": 2}, 4, delay=10)["interval"], 28)
+        self.assertEqual(learn.schedule_review({"ease": 2.5, "interval": 6, "successes": 2}, 5, delay=10)["interval"], 40)
+        self.assertEqual(learn.schedule_review({"ease": 2.5, "interval": 6, "successes": 2}, 3, delay=10)["interval"], 15)
+        self.assertEqual(learn.schedule_review({"ease": 2.5, "interval": 1, "successes": 1}, 5, delay=10)["interval"], 6)
+        self.run_cmd("card", "add", "--lesson", "L01", "--q", "q", "--a", "a")
+        self.run_cmd("review", "grade", "C001", "pass", day="2026-10-06")
+        self.run_cmd("review", "grade", "C001", "pass", day="2026-10-07")  # next due 10-13
+        self.run_cmd("review", "grade", "C001", "pass", day="2026-10-23")  # 10 days late, q4
+        card = self.js("review", "due", "--all")[0]
+        self.assertEqual((card["srs"]["interval"], card["due"]), (28, "2026-11-20"))
+        prog = json.loads((Path(self.home) / "plans/py/progress.json").read_text())
+        self.assertEqual(prog["events"][-1]["delay"], 10)
+
+
+class TestLessonNotes(Base):
+    def test_retry_shows_last_score_and_note(self):
+        self.run_cmd("done", "L01", "--score", "0.3", "--note", "confuses return with print")
+        today = self.run_cmd("today", day="2026-10-06")
+        self.assertIn("last time: last score 30% (2026-10-05) · note (2026-10-05): confuses return with print", today)
+        lesson = self.js("today")["plans"][0]["lessons"][0]
+        self.assertEqual((lesson["id"], lesson["score"], lesson["note"]), ("L01", 0.3, "confuses return with print"))
+
+    def test_note_checkpoints_an_unfinished_lesson_without_completing_it(self):
+        self.assertIn("noted py/L01 (pending)", self.run_cmd("note", "L01", "--text", "stopped after step 3"))
+        self.assertEqual(self.js("status")["plans"][0]["done"], 0)
+        self.assertEqual(self.js("today")["plans"][0]["quota"], 2)  # not a lesson event
+        self.assertEqual(self.js("today")["streak"], 0)  # not activity either
+        self.assertIn("note (2026-10-05): stopped after step 3", self.run_cmd("today"))
+        self.run_cmd("note", "L01", "--text", "   ", expect=1)
+        self.run_cmd("note", "L99", "--text", "x", expect=1)
+
+    def test_repeated_failures_escalate(self):
+        self.run_cmd("done", "L01", "--score", "0.2")
+        self.assertNotIn("failed 2 times", self.run_cmd("today", day="2026-10-06"))
+        self.run_cmd("done", "L01", "--score", "0.4")
+        self.assertIn("failed 2 times — don't re-teach it the same way", self.run_cmd("today", day="2026-10-07"))
+
+
+class TestLeechesAndEdits(Base):
+    def make_leech(self):
+        self.run_cmd("card", "add", "--lesson", "L01", "--q", "q", "--a", "a")
+        for day in ("2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09"):
+            out = self.run_cmd("review", "grade", "C001", "fail", day=day)
+        return out
+
+    def test_leech_is_flagged_after_repeated_lapses(self):
+        self.assertIn("⚠ leech: forgotten 4 times", self.make_leech())
+        os.environ["LEARN_TODAY"] = "2026-10-12"
+        self.assertIn("⚠ leech (4 lapses)", self.run_cmd("today"))
+        card = self.js("review", "next")["card"]
+        self.assertTrue(card["leech"])
+        self.assertIn("1 leech(es)", self.run_cmd("status"))
+        self.assertEqual(self.js("week")["plans"][0]["leeches"], 1)
+
+    def test_edit_rewrites_a_card_and_keeps_its_schedule(self):
+        self.make_leech()
+        before = self.js("review", "due", "--all")[0]
+        self.assertIn("schedule unchanged", self.run_cmd("card", "edit", "py/C001", "--q", "Why X?", "--a", "Because Y"))
+        after = self.js("review", "due", "--all")[0]
+        self.assertEqual((after["q"], after["a"], after["edited"]), ("Why X?", "Because Y", "2026-10-09"))
+        self.assertEqual({k: after[k] for k in ("due", "srs", "lapses", "reps")},
+                         {k: before[k] for k in ("due", "srs", "lapses", "reps")})
+        self.run_cmd("card", "edit", "C001", expect=1)
+        self.run_cmd("card", "edit", "C001", "--q", " ", expect=1)
+        self.run_cmd("card", "edit", "C009", "--q", "x", expect=1)
+
+
+class TestWeekRetention(Base):
+    def test_week_reports_long_term_recall_quality_and_new_cards(self):
+        self.run_cmd("card", "add", "--lesson", "L01", "--stdin", stdin=json.dumps([{"q": "q1", "a": "a"}, {"q": "q2", "a": "a"}]))
+        for day in ("2026-10-06", "2026-10-07"):
+            self.run_cmd("review", "grade", "C001", "pass", day=day)
+        week = self.js("week")["plans"][0]
+        self.assertEqual((week["mature_reviews"], week["new_cards"], week["avg_quality"]), (0, 2, 4.0))
+        self.assertIn("no mature cards reviewed yet", self.run_cmd("week"))
+        self.run_cmd("review", "grade", "C001", "pass", day="2026-10-13")
+        self.run_cmd("review", "grade", "C001", "pass", "--quality", "5", day="2026-11-03")  # 21-day gap
+        week = self.js("week")["plans"][0]
+        self.assertEqual((week["mature_reviews"], week["mature_passed"], week["avg_quality"], week["new_cards"]),
+                         (1, 1, 5.0, 0))
+        self.assertIn("long-term recall (≥ 21d gap): 1/1 (100%)", self.run_cmd("week"))
+
+
+class TestRollingWave(Base):
+    def test_status_asks_to_detail_the_next_stage_near_the_end(self):
+        self.assertNotIn("time to detail the next stage", self.run_cmd("status"))
+        Path(self.plan_file).write_text(json.dumps(dict(PLAN, later=["Stage 2: files"])))
+        self.run_cmd("create", "py", "--file", self.plan_file, "--update")
+        # 6 lessons left, two weeks at 2/day x 5 days = 20: already within the window
+        self.assertIn("only 6 detailed lesson(s) left and `later` has 1 stage(s)", self.run_cmd("status"))
+        self.assertTrue(self.js("status")["plans"][0]["extend_soon"])
 
 
 class TestNudge(Base):

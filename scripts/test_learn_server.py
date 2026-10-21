@@ -144,7 +144,7 @@ class TestProtocol(Base):
                   "result": "pass", "quality": 4, "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
                   "content": "# me", "key": "language", "value": "ru", "language": "ru", "cta": "/x", "markdown": True,
                   "all": True, "limit": 5, "name": "teach", "json": True, "cards": [{"q": "q2", "a": "a2"}],
-                  "format": "svg", "scale": 1.5, "full": True}
+                  "format": "svg", "scale": 1.5, "full": True, "text": "-stopped at step 2", "q": "-q", "a": "-a"}
         parser_errors = ("unrecognized arguments", "usage:", "expected one argument", "invalid choice",
                          "arguments are required", "ambiguous option", "invalid int value", "invalid float value")
         for t in self.server.core.tools.values():
@@ -173,6 +173,18 @@ class TestProtocol(Base):
 
 
 class TestSessionOverMcp(Base):
+    def test_note_card_edit_and_review_budget_over_mcp(self):
+        self.create_plan()
+        self.assertIn("noted py/L01", self.tool("learn_note", {"lesson": "L01", "text": "stopped after step 2"}))
+        lesson = json.loads(self.tool("learn_today", {"json": True}))["plans"][0]["lessons"][0]
+        self.assertEqual(lesson["note"], "stopped after step 2")
+        self.tool("learn_card_add", {"lesson": "L01", "cards": [{"q": "q", "a": "a"}]})
+        self.assertIn("schedule unchanged", self.tool("learn_card_edit", {"card": "py/C001", "q": "Why?"}))
+        self.assertIn("daily_reviews = 3", self.tool("learn_config_set", {"key": "daily_reviews", "value": "3"}))
+        os.environ["LEARN_TODAY"] = "2026-10-06"
+        self.assertEqual(json.loads(self.tool("learn_today", {"json": True}))["reviews_budget"], 3)
+        self.assertEqual(json.loads(self.tool("learn_review_next", {"json": True}))["card"]["q"], "Why?")
+
     def test_today_exposes_speed_at_session_start(self):
         self.create_plan()
         self.assertIn("speed — · not enough data yet", self.tool("learn_today"))
@@ -227,6 +239,7 @@ class TestSessionOverMcp(Base):
     def test_persistent_warmup_and_sm2_over_mcp(self):
         self.create_plan()
         self.tool("learn_card_add", {"lesson": "L01", "cards": [{"q": f"q{i}", "a": "a"} for i in range(8)]})
+        self.tool("learn_config_set", {"key": "daily_reviews", "value": "6"})  # fixed budget below the load of 8
         os.environ["LEARN_TODAY"] = "2026-10-06"
         card = json.loads(self.tool("learn_review_next", {"json": True}))["card"]
         self.assertIn("EF 2.6", self.tool("learn_review_grade", {"card": card["id"], "result": "pass", "quality": 5}))
@@ -241,6 +254,7 @@ class TestSessionOverMcp(Base):
     def test_parallel_question_issuance_is_unique_and_capped(self):
         self.create_plan()
         self.tool("learn_card_add", {"lesson": "L01", "cards": [{"q": f"q{i}", "a": "a"} for i in range(8)]})
+        self.tool("learn_config_set", {"key": "daily_reviews", "value": "6"})  # fixed budget below the load of 8
         os.environ["LEARN_TODAY"] = "2026-10-06"
         with ThreadPoolExecutor(8) as pool:
             results = list(pool.map(lambda _: json.loads(self.tool("learn_review_next", {"json": True})), range(10)))
