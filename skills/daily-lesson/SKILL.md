@@ -15,7 +15,8 @@ One session = **warm-up reviews → 1–2 lessons → wrap-up**, about 40–50 m
    - No plan yet → hand over to `study-plan`.
    - Rest day / quota done → only offer reviews; offer one bonus lesson (`learn next`) *only* if asked.
 4. Open in two short lines before the warm-up: streak and today's plan (e.g. "2 lessons + 4 reviews, ≈ 45 min"), then each selected plan's speed with actual and needed lessons/day (e.g. "Speed 0.70× · 1.00 lessons/day, needed 1.43"). Use the returned `speed` values; 1.00× means on schedule, below 1 means slower. If `speed` is null or its ratio is null, say "Speed: not enough data yet"; do not invent a ratio. If they've been away 4+ days: no guilt, no catch-up speech — "welcome back, we start light".
-5. Resume an unfinished lesson with a 2-sentence recap, using the `note` / `score` that `learn today` prints under it ("last time: …") and the current conversation to continue at the unfinished step. Do not restart its opening questions or the warm-up from chat history. A retry marked **"⚠ failed N times"** must not be re-taught the same way: find the prerequisite it rests on and repair that, or split the lesson, or change the practice type.
+5. `learn today` also prints, per plan, **⚠ watch for** — misconceptions found by the placement probe — and under each lesson its known propositions (◆ `P…`). Teach against the misconceptions on purpose; build on the propositions instead of re-teaching them.
+6. Resume an unfinished lesson with a 2-sentence recap, using the `note` / `score` that `learn today` prints under it ("last time: …") and the current conversation to continue at the unfinished step. Do not restart its opening questions or the warm-up from chat history. A retry marked **"⚠ failed N times"** must not be re-taught the same way: find the prerequisite it rests on and repair that, or split the lesson, or change the practice type.
 
 ### Graph plans (several tracks): jumping between topics on purpose
 
@@ -56,16 +57,19 @@ Use the `teach` skill's **Phase 3 loop** (one reasoning step at a time, each a p
 4. **Score** = correct ÷ asked. Record immediately: `learn done <L-id> --score 0.8 --note "confused X with Y"`.
    - Below the pass bar → the CLI marks `retry`: spend a few minutes repairing the exact gap, but **don't loop all day** — tomorrow's session re-teaches it first.
    - Use `--accept` only if the learner clearly has it and the quiz was flawed.
-5. **Make review cards** — **2 per lesson** (3 only for a dense lesson; 1 when `today` warns about a backlog), atomic and *why/how*-oriented, answerable in a sentence — not trivia: `learn card add --lesson <L-id> --stdin` with `[{"q":"…","a":"…"}]`. Cards are what keep today's lesson alive in month three, but each one costs several reviews a month for months: two good cards beat four mediocre ones.
+5. **Record what was taught** — the propositions the lesson actually established (each one true, self-contained statement with a short name; `kind` truth for the unconditional truths, derived for the rest) and how they connect:
+   `learn fact add --lesson <L-id> --stdin` with `[{"name":"…","statement":"…","kind":"truth"}]`, then `learn chain add --premises P001,P002 --conclusion P003 --lesson <L-id>` for each derivation (premises that *jointly* imply the conclusion). Only what was really taught and checked — not the plan's wish list. A statement already recorded is linked, not duplicated.
+6. **Make review cards** — **2 per lesson** (3 only for a dense lesson; 1 when `today` warns about a backlog), atomic and *why/how*-oriented, answerable in a sentence — not trivia: `learn card add --lesson <L-id> --stdin` with `[{"q":"…","a":"…","facts":["P003"]}]` — `facts` names the propositions the card tests, so a forgotten card points at the exact idea. Cards are what keep today's lesson alive in month three, but each one costs several reviews a month for months: two good cards beat four mediocre ones.
 
-Milestone lessons (`kind: milestone`): the learner produces the artifact or performance named in the unit's pass bar; judge it against that bar and say specifically what met it and what didn't. `review` lessons: run them with the `practice` skill — interleaved problems across the unit that don't name the idea they need, a minimal hint ladder, retests of every miss; no new material.
+Milestone lessons (`kind: milestone`): the learner produces the artifact or performance named in the unit's pass bar; judge it against that bar and say specifically what met it and what didn't. `review` lessons: run them with the `practice` skill (targets from `learn practice pick`, each problem recorded with `learn practice log`) — interleaved problems across the unit that don't name the idea they need, a minimal hint ladder, retests of every miss; no new material.
 
 ## 3. Wrap-up (≈ 3 min)
 
 1. **Teach-back**: "Explain today's key idea in two sentences, as if to a friend." (Producing the explanation consolidates it; correct gently.)
 2. `learn status` → report in 2 lines: progress bar, pace and speed, finish date. Name real progress plainly (a hard idea that clicked, a streak) — no generic praise, no softening of what didn't land.
-3. Preview tomorrow in one line, so the next start is easy.
-4. `learn sync`.
+3. Revisit anything you flagged as uncertain during the session (`teach`): verify, correct openly, or leave it marked.
+4. Preview tomorrow in one line, so the next start is easy.
+5. `learn sync`.
 
 ## Mobile / chat mode (Telegram, WhatsApp, any messaging gateway)
 

@@ -43,7 +43,9 @@ You need five answers. Don't proceed on a vague goal ("learn AI", "get better at
 
 ### 2. Diagnostic — find where the learner actually is
 
-Run a short placement (4–8 questions, graded) following `teach` Phase 1a: bracket the edge — something they get right *and* something they miss — then stop. Ask for a confidence with each answer and open near the top of what the goal needs, not at the basics. Record the result in `level` (one honest sentence) and in `profile.md` — there as the per-strand summary from `teach` (**floor · ceiling · misconceptions · build from**), so later lessons start from the measured edge and know which wrong models to watch for. Starting too low is boring, too high is demoralising; this is what prevents both.
+Run a short placement (4–8 questions, graded) following `teach` Phase 1a: bracket the edge — something they get right *and* something they miss — then stop. Ask for a confidence with each answer and open near the top of what the goal needs, not at the basics. Record the result in `level` (one honest sentence), and save the per-strand summary from `teach` with `learn probe set --plan <slug> --stdin` (`[{"strand","floor","ceiling","misconceptions":[…],"build_from"}]`) once the plan exists — `learn today` then shows the misconceptions at every lesson, so they get taught against on purpose. Starting too low is boring, too high is demoralising; this is what prevents both.
+
+**Already known material.** Before probing, check what is on record: `learn fact list --find "*topic*"` (propositions from earlier plans) and, if the learner used LearnHarness, import its graph first (`learn knowledge import --learnharness <its data dir>`, see `docs/knowledge.md`). A strand covered there needs a quick confirmation, not a full probe — the record is evidence of exposure, not proof of understanding.
 
 ### 3. Scope the field (don't plan from memory)
 
@@ -119,7 +121,7 @@ In chat, show: the goal in one line; outcomes; units with lesson counts and mile
 
 ### 6. Save it
 
-Write the JSON to a temp file (or pipe with `--stdin`), then `learn create <slug> --file plan.json`. Fix any validation errors it lists. Show `learn status`. Then set up the daily nudge for their environment — see `docs/platforms.md` (Hermes: a no-LLM cron job; Claude Code: a scheduled routine; elsewhere: a calendar reminder). `learn sync` at the end.
+Write the JSON to a temp file (or pipe with `--stdin`), then `learn create <slug> --file plan.json`. Fix any validation errors it lists. Save the diagnostic: `learn probe set --plan <slug> --stdin`. Show `learn status`. Then set up the daily nudge for their environment — see `docs/platforms.md` (Hermes: a no-LLM cron job; Claude Code: a scheduled routine; elsewhere: a calendar reminder). `learn sync` at the end.
 
 ### Plan JSON
 
@@ -165,4 +167,6 @@ Rules enforced by `learn create`: unique `L..`/`U..`/`O..` ids, `title`+`goal`, 
 - **Review load**: the daily warm-up budget is config `daily_reviews` (`auto` by default: today's due cards, 6..30). A "review backlog" warning means cards are created faster than they are reviewed: fewer cards per lesson first; a higher fixed budget only if the learner has the time.
 - **Monthly**: re-read outcomes; drop what no longer matters.
 - **Finished**: `learn archive <slug>`, a short retrospective (what worked, what to learn next), and offer a follow-up plan.
+- **Plans made before the knowledge layer** (lessons done, but `learn fact list` is empty for them): migrate once — `learn fact seed` drafts propositions from the done lessons' `nodes`; rewrite each draft as one precise statement (`learn fact edit P… --statement … --name … --kind truth|derived`, `learn fact list --drafts` shows what's left), add the chains (`learn chain add`), and link the existing cards (`learn card edit <plan>/C… --facts P…`). The plan file itself doesn't change. Propositions imported from LearnHarness: attach them to the lessons that teach them (`learn fact link --facts … --lesson …`).
+- **Practice**: `learn week` also reports practice outcomes and misconceptions; a misconception that survives practice deserves a repair lesson in the plan.
 - **Revising**: edit `<data dir>/plans/<slug>/plan.json` (lessons, order, pace), then `learn validate --plan <slug> && learn render --plan <slug>` (or `learn create <slug> --file new.json --update`). Progress is keyed by lesson id, so finished lessons stay finished — keep ids stable.

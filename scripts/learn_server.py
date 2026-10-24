@@ -55,8 +55,9 @@ All progress lives here, so any device continues where the last one stopped.
 
 Before running a session, call `learn_skill` with the method you need and follow it: \
 `daily-lesson` (study / continue / answered a reminder), `study-plan` (new goal, progress, change the plan), \
-`teach` (how to explain anything). Every learner-visible fact still has to be taught well — the tools only keep the score. \
-Nothing counts until it is recorded: `learn_done`, `learn_card_add`, `learn_review_grade`. \
+`teach` (how to explain anything), `practice` (problems / review lessons). Every learner-visible fact still has to be taught well — the tools only keep the score. \
+Nothing counts until it is recorded: `learn_done`, `learn_card_add`, `learn_review_grade`; after a lesson also \
+`learn_fact_add` + `learn_chain_add` (what was taught and how it connects); after a practice problem `learn_practice_log`. \
 At session start, show each selected plan's speed from `learn_today` with actual and needed lessons/day \
 (1.0x = on schedule); if speed is null, say there is not enough data yet. \
 Warm-up: `learn_today` only previews; issue each question with `learn_review_next`, then call \
@@ -181,6 +182,8 @@ PLAN = s("plan slug; omit when there is a single active plan", pattern=SLUG, max
 LESSON = s("lesson id, e.g. L07", pattern=IDENT, maxLength=64)
 TRACK = s("graph plans: only this track (unit id)", pattern=IDENT, maxLength=64)
 CARD = s("card id C007 or plan/C007", pattern=IDENT, maxLength=140)
+FACT = s("proposition id, e.g. P003", pattern=r"^P\d+$", maxLength=16)
+FACTS = {"type": "array", "minItems": 1, "maxItems": 50, "items": FACT}
 BUDGET_DESC = ("daily warm-up budget across chats and plans; omit to use config daily_reviews "
                "(default auto: the day's due load, 6..30). Raise it only when the learner asks")
 CONFIG_KEYS = ["language", "timezone", "chat_format", "daily_reviews"]
@@ -200,7 +203,8 @@ def cli(cmd, opts=(), flags=(), pos=(), fixed=(), stdin=None):
         argv = [*cmd, *fixed]
         for k in opts:
             if k in a:
-                argv.append(f"--{k.replace('_', '-')}={a[k]}")
+                v = ",".join(a[k]) if isinstance(a[k], list) else a[k]
+                argv.append(f"--{k.replace('_', '-')}={v}")
         argv += [f"--{k}" for k in flags if a.get(k)]
         if a.get("json"):
             argv.append("--json")
@@ -337,15 +341,17 @@ TOOLS = [
           "cards": {"type": "array", "minItems": 1, "maxItems": 20,
                     "items": {"type": "object", "required": ["q", "a"], "additionalProperties": False,
                               "properties": {"q": s("question", minLength=1, maxLength=1000),
-                                             "a": s("answer", minLength=1, maxLength=2000)}}}},
+                                             "a": s("answer", minLength=1, maxLength=2000),
+                                             "facts": {**FACTS, "description": "propositions this card tests"}}}}},
          required=("lesson", "cards")),
     Tool("learn_card_retire", "Stop reviewing a card.",
          cli(["card", "retire"], opts=("plan",), pos=("card",)), {"card": CARD, "plan": PLAN}, required=("card",)),
     Tool("learn_card_edit", "Rewrite a card's question and/or answer (e.g. a leech, or an ambiguous card). "
                             "Keeps its id, schedule and history.",
-         cli(["card", "edit"], opts=("plan", "q", "a"), pos=("card",)),
+         cli(["card", "edit"], opts=("plan", "q", "a", "facts"), pos=("card",)),
          {"card": CARD, "plan": PLAN, "q": s("new question", minLength=1, maxLength=1000),
-          "a": s("new answer", minLength=1, maxLength=2000)}, required=("card",), idempotent=True),
+          "a": s("new answer", minLength=1, maxLength=2000),
+          "facts": {**FACTS, "description": "replace the propositions the card tests"}}, required=("card",), idempotent=True),
     Tool("learn_review_due", "List review cards that are due (or all, with all=true).",
          cli(["review", "due"], opts=("plan", "limit"), flags=("all",)),
          {"plan": PLAN, "all": {"type": "boolean"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
@@ -370,6 +376,88 @@ TOOLS = [
           "confidence": {"type": "integer", "minimum": 0, "maximum": 100,
                          "description": "learner's stated confidence 0..100 that the answer was right, given before the reveal"}},
          required=("card", "result")),
+    Tool("learn_fact_add", "Record the propositions a lesson taught: each one true, self-contained statement with a short "
+                           "name; kind truth (accepted at face value) or derived. A statement already known is linked, "
+                           "not duplicated. Do this at the end of every lesson, then learn_chain_add for how they connect.",
+         cli(["fact", "add"], opts=("plan", "lesson"), fixed=("--stdin",),
+             stdin=lambda a: json.dumps(a["propositions"], ensure_ascii=False)),
+         {"plan": PLAN, "lesson": LESSON,
+          "propositions": {"type": "array", "minItems": 1, "maxItems": 50,
+                           "items": {"type": "object", "required": ["statement"], "additionalProperties": False,
+                                     "properties": {"name": s("short label", maxLength=120),
+                                                    "statement": s("one true, self-contained statement",
+                                                                   minLength=1, maxLength=2000),
+                                                    "aliases": {"type": "array", "maxItems": 20,
+                                                                "items": s("another phrasing", maxLength=2000)},
+                                                    "kind": {"type": "string", "enum": ["truth", "derived"]}}}}},
+         required=("propositions",)),
+    Tool("learn_fact_edit", "Rewrite a proposition (e.g. a seeded draft): the old statement is kept as an alias.",
+         cli(["fact", "edit"], opts=("name", "statement", "alias", "kind"), pos=("fact",)),
+         {"fact": FACT, "name": s("short label", minLength=1, maxLength=120),
+          "statement": s("new statement", minLength=1, maxLength=2000), "alias": s("another phrasing", maxLength=2000),
+          "kind": {"type": "string", "enum": ["truth", "derived"]}}, required=("fact",), idempotent=True),
+    Tool("learn_fact_link", "Attach propositions to a lesson that (also) teaches them, e.g. after a LearnHarness import.",
+         cli(["fact", "link"], opts=("plan", "lesson", "facts")),
+         {"plan": PLAN, "lesson": LESSON, "facts": FACTS}, required=("lesson", "facts"), idempotent=True),
+    Tool("learn_fact_retire", "Stop using a proposition (wrong or redundant); it stays in the record.",
+         cli(["fact", "retire"], pos=("fact",)), {"fact": FACT}, required=("fact",), idempotent=True),
+    Tool("learn_fact_list", "Propositions with their evidence: lessons (status, score), cards (lapses), practice. "
+                            "Read the lesson's propositions before teaching or practising it. "
+                            "find = substring search, * is a wildcard.",
+         cli(["fact", "list"], opts=("plan", "lesson", "find", "limit"), flags=("drafts", "all")),
+         {"plan": PLAN, "lesson": LESSON, "find": s("search pattern", maxLength=200),
+          "drafts": {"type": "boolean", "description": "only seeded drafts still to rewrite"},
+          "all": {"type": "boolean", "description": "include retired"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 500}}, readonly=True, structured=True),
+    Tool("learn_fact_seed", "Migration for lessons recorded before propositions existed: draft propositions from the key "
+                            "ideas (nodes) of done/retry lessons (all=true: every lesson). Then rewrite each draft "
+                            "with learn_fact_edit and add chains.",
+         cli(["fact", "seed"], opts=("plan",), flags=("all",)),
+         {"plan": PLAN, "all": {"type": "boolean"}}, idempotent=True),
+    Tool("learn_chain_add", "Record a reasoning chain: premises that JOINTLY imply the conclusion. Two arguments for the "
+                            "same conclusion are two chains.",
+         cli(["chain", "add"], opts=("plan", "lesson", "premises", "conclusion")),
+         {"plan": PLAN, "lesson": LESSON, "premises": FACTS, "conclusion": FACT},
+         required=("premises", "conclusion"), idempotent=True),
+    Tool("learn_chain_list", "Reasoning chains (premises ∧ … ⟹ conclusion), optionally those touching one proposition.",
+         cli(["chain", "list"], opts=("plan", "fact")), {"plan": PLAN, "fact": FACT}, readonly=True, structured=True),
+    Tool("learn_practice_pick", "Practice targets (see the practice skill): propositions from finished lessons, weakest first "
+                                "(misses, hints, lapses, low scores, idle time), interleaved across lessons, each with the "
+                                "cheapest mode not yet shown (recall → discrimination → composition). Today's misses come "
+                                "back first as retests in a fresh surface. Never name the target to the learner.",
+         cli(["practice", "pick"], opts=("plan", "count")),
+         {"plan": PLAN, "count": {"type": "integer", "minimum": 1, "maximum": 10}}, readonly=True, structured=True),
+    Tool("learn_practice_log", "Record one practice problem right after it concludes: targets, mode, outcome, the highest "
+                               "hint rung given and the miss type. Practice never reschedules review cards.",
+         cli(["practice", "log"], opts=("targets", "mode", "outcome", "rung", "miss", "note")),
+         {"targets": FACTS, "mode": {"type": "string", "enum": ["recall", "discrimination", "composition"]},
+          "outcome": {"type": "string", "enum": ["solved", "hinted", "missed", "surrendered"]},
+          "rung": {"type": "integer", "minimum": 0, "maximum": 5, "description": "highest hint: R0 redirect … R5 worked step"},
+          "miss": {"type": "string", "enum": ["cue", "discrimination", "execution", "careless", "misconception"]},
+          "note": s("one line", maxLength=500)}, required=("targets", "mode", "outcome")),
+    Tool("learn_probe_set", "Save the placement probe of a plan: per strand the floor (reliably right), ceiling (where it "
+                            "runs out), misconceptions and what to build from. learn_today shows the misconceptions.",
+         cli(["probe", "set"], opts=("plan",), fixed=("--stdin",), stdin=lambda a: json.dumps(a["strands"], ensure_ascii=False)),
+         {"plan": PLAN, "strands": {"type": "array", "minItems": 1, "maxItems": 30,
+                                    "items": {"type": "object", "required": ["strand"], "additionalProperties": False,
+                                              "properties": {"strand": s("strand", minLength=1, maxLength=200),
+                                                             "floor": s("what they reliably get right", maxLength=500),
+                                                             "ceiling": s("where it runs out", maxLength=500),
+                                                             "misconceptions": {"type": "array", "maxItems": 20,
+                                                                                "items": s("wrong model", maxLength=500)},
+                                                             "build_from": s("where teaching starts", maxLength=500)}}}},
+         required=("strands",), idempotent=True),
+    Tool("learn_probe_show", "The saved placement probe of a plan.",
+         cli(["probe", "show"], opts=("plan",)), {"plan": PLAN}, readonly=True, structured=True),
+    Tool("learn_history", "The learner's record, oldest first: lessons (score, note), recalls (quality, confidence), "
+                          "practice (mode, outcome, hints, miss type). Use it to tailor an explanation or find what keeps slipping.",
+         cli("history", opts=("plan", "lesson", "days", "limit")),
+         {"plan": PLAN, "lesson": LESSON, "days": {"type": "integer", "minimum": 1, "maximum": 3650},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, readonly=True, structured=True),
+    Tool("learn_knowledge_export", "The knowledge graph as md (notes: Obsidian, or LearnHarness notes import) or json "
+                                   "(LearnHarness format-1 nodes/chains/sources).",
+         cli(["knowledge", "export"], opts=("plan", "format")),
+         {"plan": PLAN, "format": {"type": "string", "enum": ["md", "json"]}}, readonly=True),
     Tool("learn_create", "Create a plan from a plan object (see the study-plan skill), or replace one with update=true "
                          "while keeping all progress. Validates and returns every problem at once.",
          cli("create", flags=("update",), pos=("slug",), fixed=("--stdin",), stdin=lambda a: json.dumps(a["plan"], ensure_ascii=False)),
@@ -405,7 +493,8 @@ TOOLS = [
           "cta": s("what the learner should send to start", maxLength=100),
           "markdown": {"type": "boolean", "description": "rich Markdown for Telegram rich messages"}}, readonly=True),
     Tool("learn_skill", "The teaching method and workflows. Call without a name to list them; with a name to get the full "
-                        "instructions: daily-lesson (run a session), study-plan (make / revise a plan), teach (explain well).",
+                        "instructions: daily-lesson (run a session), study-plan (make / revise a plan), teach (explain well), "
+                        "practice (problems that make taught ideas come to mind), visualize (diagrams).",
          skill_tool, {"name": s("skill name", maxLength=64)}, readonly=True),
 ]
 

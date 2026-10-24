@@ -1219,6 +1219,197 @@ class TestGraphViews(GraphBase):
         self.assertLess(len(line), 80)
 
 
+def lh_fixture(root, fmt=1):
+    """A tiny LearnHarness data dir: a repeated node id, a repeated chain and one with a missing endpoint."""
+    g = Path(root) / "graph"
+    g.mkdir(parents=True)
+    lines = [
+        {"id": "n_a", "name": "One fact per row", "statement": "Each row is one fact.", "aliases": ["A row is a fact"],
+         "createdAt": "2026-09-30T10:00:00.000Z", "provenance": [{"chatId": "chat_1", "messageId": "m1"}]},
+        {"id": "n_b", "name": "Primary key", "statement": "Rows are referred to only by values, so tables need keys.",
+         "aliases": [], "createdAt": "2026-09-30T10:00:00.000Z", "provenance": [{"chatId": "chat_1", "messageId": ""}]},
+        {"id": "n_a", "name": "ignored later name", "statement": "Every row states exactly one fact.", "aliases": [],
+         "createdAt": "2026-10-01T10:00:00.000Z", "provenance": [{"chatId": "chat_2", "messageId": ""}]},
+    ]
+    (g / "nodes.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines) + "not json\n")
+    chains = [
+        {"id": "arg_1", "premises": ["n_a"], "conclusion": "n_b", "createdAt": "2026-09-30T10:00:00.000Z",
+         "provenance": [{"chatId": "chat_1", "messageId": ""}]},
+        {"id": "arg_2", "premises": ["n_a"], "conclusion": "n_b", "createdAt": "2026-10-01T10:00:00.000Z",
+         "provenance": [{"chatId": "chat_2", "messageId": ""}]},
+        {"id": "arg_3", "premises": ["n_gone"], "conclusion": "n_b", "createdAt": "2026-10-01T10:00:00.000Z", "provenance": []},
+    ]
+    (g / "chains.jsonl").write_text("".join(json.dumps(x) + "\n" for x in chains))
+    (g / "format.json").write_text(json.dumps({"version": fmt}))
+    return root
+
+
+class TestKnowledge(Base):
+    def knowledge(self):
+        return json.loads((Path(self.home) / "knowledge.json").read_text())
+
+    def add(self, lesson, *items):
+        return self.run_cmd("fact", "add", "--lesson", lesson, "--stdin", stdin=json.dumps(list(items)))
+
+    def test_propositions_dedupe_by_statement_and_keep_old_wording_as_alias(self):
+        self.add("L01", {"name": "Function", "statement": "A function names a  recipe once.", "kind": "truth"})
+        out = self.add("L02", {"statement": "a function names a recipe once."})
+        self.assertIn("already known", out)
+        p = self.knowledge()["props"][0]
+        self.assertEqual(p["sources"], [{"plan": "py", "lesson": "L01"}, {"plan": "py", "lesson": "L02"}])
+        self.run_cmd("fact", "edit", "P001", "--statement", "A function gives a reusable recipe one name.")
+        p = self.knowledge()["props"][0]
+        self.assertEqual((p["statement"], p["aliases"]),
+                         ("A function gives a reusable recipe one name.", ["A function names a recipe once."]))
+        self.assertIn("already known", self.add("L03", {"statement": "A function names a recipe once."}))
+        self.assertIn("L99", self.run_cmd("fact", "add", "--lesson", "L99", "--statement", "x", expect=1))
+        self.assertIn("kind must be", self.add_err({"statement": "s", "kind": "axiom"}))
+
+    def add_err(self, item):
+        return self.run_cmd("fact", "add", "--lesson", "L01", "--stdin", stdin=json.dumps([item]), expect=1)
+
+    def test_chains_merge_by_premise_set_and_reject_bad_references(self):
+        self.add("L01", {"statement": "a"}, {"statement": "b"}, {"statement": "c"})
+        self.assertIn("+ A001", self.run_cmd("chain", "add", "--premises", "P001,P002", "--conclusion", "P003"))
+        self.assertIn("already known", self.run_cmd("chain", "add", "--premises", "P002 P001", "--conclusion", "P003",
+                                                    "--lesson", "L02"))
+        self.assertEqual(len(self.knowledge()["chains"]), 1)
+        self.assertIn("own premises", self.run_cmd("chain", "add", "--premises", "P001,P003", "--conclusion", "P003", expect=1))
+        self.assertIn("unknown proposition", self.run_cmd("chain", "add", "--premises", "P009", "--conclusion", "P003",
+                                                          expect=1))
+        self.assertIn("P001 a ∧ P002 b ⟹ P003 c", self.run_cmd("chain", "list", "--fact", "P002"))
+
+    def test_cards_link_to_propositions_and_lapses_show_as_evidence(self):
+        self.add("L01", {"statement": "a"})
+        self.run_cmd("done", "L01", "--score", "0.75")
+        self.run_cmd("card", "add", "--lesson", "L01", "--stdin", stdin=json.dumps([{"q": "q", "a": "a", "facts": ["P001"]}]))
+        self.assertIn("unknown proposition", self.run_cmd("card", "add", "--lesson", "L01", "--q", "q", "--a", "a",
+                                                          "--facts", "P404", expect=1))
+        self.run_cmd("review", "grade", "C001", "fail", "--confidence", "90", day="2026-10-06")
+        row = self.js("fact", "list")[0]
+        self.assertEqual((row["cards"][0]["lapses"], row["lessons"][0]["score"]), (1, 0.75))
+        self.assertIn("confident miss in review", row["reasons"])
+        self.run_cmd("card", "edit", "C001", "--facts", "P001")
+
+    def test_seed_migrates_key_ideas_of_finished_lessons_once(self):
+        plan = json.loads(json.dumps(PLAN))
+        plan["units"][0]["lessons"][0]["nodes"] = ["Repeated code means repeated bugs", "A function names a recipe once"]
+        plan["units"][0]["lessons"][1]["nodes"] = ["not taught yet"]
+        self.run_cmd("create", "py", "--update", "--stdin", stdin=json.dumps(plan))
+        self.run_cmd("done", "L01")
+        self.assertIn("seeded 2 draft", self.run_cmd("fact", "seed"))
+        self.assertIn("nothing to seed", self.run_cmd("fact", "seed"))
+        self.assertEqual(len(self.js("fact", "list", "--drafts")), 2)
+        self.run_cmd("fact", "edit", "P001", "--statement", "Copy-pasted code must be fixed in every copy.")
+        self.assertEqual([r["id"] for r in self.js("fact", "list", "--drafts")], ["P002"])
+        self.assertIn("seeded 1", self.run_cmd("fact", "seed", "--all"))
+
+    def test_practice_picks_weakest_interleaved_and_retests_todays_misses_first(self):
+        self.add("L01", {"statement": "a"}, {"statement": "b"})
+        self.add("L02", {"statement": "c"})
+        self.add("L03", {"statement": "not taught"})
+        self.run_cmd("done", "L01", "--score", "1")
+        self.run_cmd("done", "L02", "--score", "0.5", "--accept")
+        picked = self.js("practice", "pick", "-n", "2")
+        self.assertEqual(picked["pool"], 3)
+        self.assertEqual([t["id"] for t in picked["targets"]], ["P003", "P001"])  # weakest first, one per lesson
+        self.assertEqual({t["mode"] for t in picked["targets"]}, {"recall"})
+        self.run_cmd("practice", "log", "--targets", "P001", "--mode", "recall", "--outcome", "missed", "--miss", "cue")
+        first = self.js("practice", "pick", "-n", "1")["targets"][0]
+        self.assertEqual((first["id"], first["retest"]), ("P001", True))
+        self.run_cmd("practice", "log", "--targets", "P001", "--mode", "recall", "--outcome", "solved", "--rung", "1")
+        self.run_cmd("chain", "add", "--premises", "P002", "--conclusion", "P001")
+        modes = {t["id"]: t["mode"] for t in self.js("practice", "pick", "-n", "3")["targets"]}
+        self.assertEqual(modes["P001"], "discrimination")
+        self.run_cmd("practice", "log", "--targets", "P001", "--mode", "discrimination", "--outcome", "solved")
+        modes = {t["id"]: t["mode"] for t in self.js("practice", "pick", "-n", "3")["targets"]}
+        self.assertEqual(modes["P001"], "composition")
+
+    def test_practice_log_rejects_contradictions(self):
+        self.add("L01", {"statement": "a"})
+        self.assertIn("hinted", self.run_cmd("practice", "log", "--targets", "P001", "--mode", "recall",
+                                             "--outcome", "solved", "--rung", "3", expect=1))
+        self.assertIn("no miss type", self.run_cmd("practice", "log", "--targets", "P001", "--mode", "recall",
+                                                   "--outcome", "solved", "--miss", "cue", expect=1))
+        self.assertIn("0..5", self.run_cmd("practice", "log", "--targets", "P001", "--mode", "recall",
+                                           "--outcome", "hinted", "--rung", "7", expect=1))
+        self.assertEqual(self.knowledge()["practice"], [])
+
+    def test_probe_is_saved_and_its_misconceptions_reach_today(self):
+        strands = [{"strand": "functions", "floor": "calls built-ins", "ceiling": "cannot define one",
+                    "misconceptions": ["return prints the value"], "build_from": "repeated code"}]
+        self.run_cmd("probe", "set", "--stdin", stdin=json.dumps(strands))
+        self.assertIn("⚠ return prints the value", self.run_cmd("probe", "show"))
+        self.add("L01", {"statement": "a function names a recipe once"})
+        today = self.run_cmd("today")
+        self.assertIn("watch for (probe): return prints the value", today)
+        self.assertIn("◆ P001 a function names a recipe once", today)
+        plan = self.js("today")["plans"][0]
+        self.assertEqual(plan["watch_for"], ["return prints the value"])
+        self.assertEqual(plan["lessons"][0]["propositions"][0]["id"], "P001")
+        self.assertIn("floor", self.run_cmd("probe", "set", "--stdin", stdin='[{"strand": "x"}]', expect=1))
+
+    def test_history_and_week_include_recall_confidence_and_practice(self):
+        self.add("L01", {"name": "Function", "statement": "a"})
+        self.run_cmd("done", "L01", "--score", "0.8", "--note", "mixes up return and print")
+        self.run_cmd("card", "add", "--lesson", "L01", "--q", "What does return do?", "--a", "hands back a value")
+        self.run_cmd("review", "grade", "C001", "pass", "--confidence", "30", day="2026-10-06")
+        self.run_cmd("practice", "log", "--targets", "P001", "--mode", "recall", "--outcome", "missed",
+                     "--miss", "misconception")
+        hist = self.run_cmd("history")
+        self.assertIn("py/L01 lesson ✓ 80% · Lesson 1 — mixes up return and print", hist)
+        self.assertIn("py/C001 recall ✓ q3 @30%", hist)
+        self.assertIn("practice recall missed (misconception) · Function", hist)
+        self.assertEqual([r["type"] for r in self.js("history", "--lesson", "L01")], ["lesson", "review", "practice"])
+        self.assertIn("⚠ misconceptions: 1", self.run_cmd("week"))
+
+    def test_learnharness_import_follows_their_merge_rules_and_is_idempotent(self):
+        src = lh_fixture(os.path.join(self.tmp.name, "lh"))
+        out = self.run_cmd("knowledge", "import", "--learnharness", src)
+        self.assertIn("2 new / 0 merged propositions, 1 new / 0 merged chains", out)
+        self.assertIn("missing node(s) n_gone", out)
+        self.assertIn("not JSON", out)
+        k = self.knowledge()
+        a = k["props"][0]
+        self.assertEqual((a["name"], a["lh_id"]), ("One fact per row", "n_a"))
+        self.assertEqual(a["aliases"], ["A row is a fact", "Every row states exactly one fact."])
+        self.assertEqual(a["sources"], [{"lh": "chat_1"}, {"lh": "chat_2"}])
+        self.assertEqual(k["chains"][0]["sources"], [{"lh": "chat_1"}, {"lh": "chat_2"}])
+        self.run_cmd("knowledge", "import", "--learnharness", os.path.join(src, "graph"), "--lesson", "L02")
+        k = self.knowledge()
+        self.assertEqual((len(k["props"]), len(k["chains"])), (2, 1))
+        self.assertIn({"plan": "py", "lesson": "L02"}, k["props"][1]["sources"])
+        newer = lh_fixture(os.path.join(self.tmp.name, "lh2"), fmt=2)
+        self.assertIn("newer", self.run_cmd("knowledge", "import", "--learnharness", newer, expect=1))
+        self.assertIn("no LearnHarness graph", self.run_cmd("knowledge", "import", "--learnharness", self.tmp.name, expect=1))
+
+    def test_export_in_their_format_round_trips_lesson_links(self):
+        self.add("L01", {"name": "Function", "statement": "a"}, {"statement": "b"})
+        self.run_cmd("chain", "add", "--premises", "P001", "--conclusion", "P002", "--lesson", "L01")
+        dump = self.js("knowledge", "export", "--format", "json")
+        self.assertEqual(dump["nodes"][0]["provenance"], [{"chatId": "src_learn_py_L01", "messageId": ""}])
+        self.assertEqual(dump["sources"]["src_learn_py_L01"]["filePath"], "learn:py/L01")
+        self.assertEqual(dump["chains"][0]["premises"], ["n_learn_p001"])
+        out = os.path.join(self.tmp.name, "out")
+        self.run_cmd("knowledge", "export", "--format", "learnharness", "--out", out)
+        self.assertIn("refusing to overwrite", self.run_cmd("knowledge", "export", "--format", "learnharness",
+                                                            "--out", out, expect=1))
+        other = os.path.join(self.tmp.name, "other")
+        self.run_cmd("--home", other, "init")
+        self.run_cmd("--home", other, "knowledge", "import", "--learnharness", out)
+        k = json.loads((Path(other) / "knowledge.json").read_text())
+        self.assertEqual(k["props"][0]["sources"], [{"plan": "py", "lesson": "L01"}])
+        self.assertEqual(k["props"][0]["lh_id"], "n_learn_p001")
+        md = self.run_cmd("knowledge", "export")
+        self.assertIn("## py/L01 · Lesson 1", md)
+        self.assertIn("- **Function** — a", md)
+        self.assertIn("- Function ⟹ b", md)
+
+    def test_newer_knowledge_file_is_refused(self):
+        (Path(self.home) / "knowledge.json").write_text(json.dumps({"version": 9}))
+        self.assertIn("format 9", self.run_cmd("fact", "list", expect=1))
+
+
 class TestStartDate(Base):
     def setUp(self):
         super().setUp()

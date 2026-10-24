@@ -144,7 +144,11 @@ class TestProtocol(Base):
                   "result": "pass", "quality": 4, "confidence": 70, "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
                   "content": "# me", "key": "language", "value": "ru", "language": "ru", "cta": "/x", "markdown": True,
                   "all": True, "limit": 5, "name": "teach", "json": True, "cards": [{"q": "q2", "a": "a2"}],
-                  "format": "svg", "scale": 1.5, "full": True, "text": "-stopped at step 2", "q": "-q", "a": "-a"}
+                  "format": "svg", "scale": 1.5, "full": True, "text": "-stopped at step 2", "q": "-q", "a": "-a",
+                  "propositions": [{"statement": "-s", "name": "n", "kind": "truth"}], "fact": "P001", "facts": ["P001"],
+                  "find": "-x*", "drafts": True, "statement": "-st", "alias": "-al", "kind": "truth",
+                  "premises": ["P001"], "conclusion": "P002", "targets": ["P001"], "mode": "recall",
+                  "outcome": "missed", "rung": 1, "miss": "cue", "strands": [{"strand": "-s", "floor": "f"}], "days": 7}
         parser_errors = ("unrecognized arguments", "usage:", "expected one argument", "invalid choice",
                          "arguments are required", "ambiguous option", "invalid int value", "invalid float value")
         for t in self.server.core.tools.values():
@@ -153,6 +157,8 @@ class TestProtocol(Base):
                 args["plan"] = PLAN
             if t.name == "learn_skip":
                 args["lesson"] = "L06"
+            if t.name == "learn_knowledge_export":
+                args["format"] = "md"
             res = self.rpc("tools/call", {"name": t.name, "arguments": args})["result"]
             text = text_of(res)
             self.assertFalse(any(e in text for e in parser_errors), f"{t.name}: {text}")
@@ -351,6 +357,29 @@ class TestSessionOverMcp(Base):
         got = self.rpc("prompts/get", {"name": "teach"})["result"]
         self.assertIn("[Remote mode]", got["messages"][0]["content"]["text"])
         self.assertEqual(self.rpc("prompts/get", {"name": "nope"})["error"]["code"], -32602)
+
+    def test_knowledge_round_trip_over_mcp(self):
+        self.create_plan()
+        out = self.tool("learn_fact_add", {"lesson": "L01", "propositions": [
+            {"name": "Function", "statement": "A function names a recipe once.", "kind": "truth"},
+            {"statement": "Copy-pasted code must be fixed in every copy."}]})
+        self.assertIn("+ P002", out)
+        self.assertIn("A001", self.tool("learn_chain_add", {"premises": ["P002"], "conclusion": "P001", "lesson": "L01"}))
+        self.tool("learn_card_add", {"lesson": "L01", "cards": [{"q": "q", "a": "a", "facts": ["P001", "P002"]}]})
+        self.tool("learn_done", {"lesson": "L01", "score": 0.5, "accept": True})
+        picked = json.loads(self.tool("learn_practice_pick", {"count": 2, "json": True}))
+        self.assertEqual(len(picked["targets"]), 2)
+        self.assertIn("logged recall hinted for P001, P002",
+                      self.tool("learn_practice_log", {"targets": ["P001", "P002"], "mode": "recall", "outcome": "hinted",
+                                                       "rung": 2}))
+        self.tool("learn_probe_set", {"strands": [{"strand": "functions", "ceiling": "cannot define one",
+                                                   "misconceptions": ["return prints"]}]})
+        self.assertIn("return prints", self.tool("learn_today"))
+        self.assertIn("practice recall hinted R2", self.tool("learn_history"))
+        dump = json.loads(self.tool("learn_knowledge_export", {"format": "json"}))
+        self.assertEqual(len(dump["nodes"]), 2)
+        self.tool("learn_fact_add", {"propositions": [{"statement": ""}]}, expect_error=True)
+        self.tool("learn_practice_log", {"targets": ["X1"], "mode": "recall", "outcome": "solved"}, expect_error=True)
 
     def test_parallel_calls_never_lose_a_write(self):
         self.create_plan()

@@ -13,7 +13,9 @@ Practice is not an exam (you build the demand that strengthens most, not the che
 
 ## Where this runs
 
-Same instruments and fallbacks as `teach` (text in chat, LaTeX only where it renders, short messages on a phone). Material is either the lessons of the plan (`learn show`, the lesson's `objective`/`check`, its review cards, `note`s on past attempts) or whatever the learner brings: a topic, a chapter, an outside problem they can't solve.
+Same instruments and fallbacks as `teach` (text in chat, LaTeX only where it renders, short messages on a phone). Material is either the plan's knowledge — `learn practice pick` returns the targets — or whatever the learner brings: a topic, a chapter, an outside problem they can't solve (then work from the material itself; log targets only when they are recorded propositions).
+
+`learn practice pick [-n 3]` gives propositions from finished lessons, weakest first and interleaved across lessons, each with the mode to use next and the chains it concludes. Today's misses come back first, marked **RETEST** — pose those in a fresh surface. Pick again after a few problems: the order changes as you log outcomes. `learn fact list --lesson L…` and `learn history --lesson L…` show the evidence behind a target (scores, lapsed cards, earlier misses, notes).
 
 ## The three modes
 
@@ -75,8 +77,9 @@ An outside problem he brings goes through the same machinery: solve it, map whic
 
 ## Recording
 
+- **After every concluded problem**: `learn practice log --targets P003[,P004] --mode recall|discrimination|composition --outcome solved|hinted|missed|surrendered [--rung 0..5] [--miss cue|discrimination|execution|careless|misconception] [--note "…"]`. `--rung` is the highest hint given; a solve that needed R3+ is `hinted` (the CLI refuses to call it solved). This is what the next `practice pick` learns from.
 - In a plan's `review` or `milestone` lesson: score = problems solved without R3+ hints ÷ problems posed, then `learn done <L-id> --score … --note "missed: X (wrong idea won vs Y); retested OK"`.
-- Ad hoc practice outside a lesson: if it exposed a gap, `learn note <L-id> --text "…"` on the lesson it belongs to, or rewrite the weak card (`learn card edit`). A spaced review card is still graded only in the warm-up (`daily-lesson`) — practice never reschedules cards.
+- A misconception found here: add it to the lesson's note, and if a card tests the idea, rewrite it (`learn card edit … --facts P…`). A spaced review card is still graded only in the warm-up (`daily-lesson`) — practice never reschedules cards.
 
 ## Never
 
