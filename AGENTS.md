@@ -9,12 +9,13 @@ Personal long-term learning system. Portable core: **skills** (Agent Skills `SKI
 - `skills/daily-lesson` — run one session: spaced-review warm-up → 1–2 lessons → wrap-up. Includes chat/Telegram mode.
 - `skills/practice` — problems that make taught ideas come to mind unnamed: recall / discrimination / composition, hint ladder, fresh-surface retests. Used by `review` lessons.
 - `skills/visualize` — minimal diagrams, with fallbacks for chat apps.
+- `scripts/learn_knowledge.py` — the knowledge layer imported by `learn.py`: propositions, reasoning chains (premises jointly ⟹ conclusion), practice outcomes, evidence-based practice picking, LearnHarness graph (format 1) import/export. Stored in `$LEARN_HOME/knowledge.json`; understanding is derived on read, never stored.
 - `scripts/learn_graph.py` — knowledge-graph logic (tracks, junctions, day picking, text/md/mermaid/svg renderers), imported by `learn.py`.
-- `scripts/learn.py` — state CLI (`learn today | done | card add | review grade | status | nudge | sync …`). Tests: `python3 scripts/test_learn.py`.
+- `scripts/learn.py` — state CLI (`learn today | done | card add | review grade | fact | chain | practice | probe | history | knowledge | status | nudge | sync …`). Tests: `python3 scripts/test_learn.py`.
 - `scripts/learn_server.py` — MCP (Streamable HTTP + stdio) and REST server on top of `learn.py`; every tool is a validated wrapper that runs the CLI. Tests: `python3 scripts/test_learn_server.py`.
 - `integrations/hermes` — installer + cron reminder for Hermes Agent/Telegram. `integrations/generic/notify.sh` — reminders for any setup. `integrations/server` — systemd unit + Caddyfile for `learn_server.py`.
 - `extensions/`, `agents/` — pi-only extras (`quiz`, `ask-user-question`, `md-log`, visual makers, `researcher`).
-- `docs/` (Russian) — knowledge graph, platforms, Hermes+Telegram guide, remote MCP/API server on a VPS, learning-science notes, sync.
+- `docs/` (Russian) — knowledge graph, knowledge layer + LearnHarness exchange (`knowledge.md`), platforms, Hermes+Telegram guide, remote MCP/API server on a VPS, learning-science notes, sync.
 
 ## When asked to learn/teach something
 
@@ -30,7 +31,7 @@ If this session has `learn_*` MCP tools instead of a shell (a remote `learn_serv
 ## Conventions for changes
 
 - `learn.py` and `learn_server.py` stay stdlib-only, Python ≥ 3.9; add a test for every behaviour change.
-- New `learn` command or option → expose it in `learn_server.py` (or consciously don't: `sync`, `init`) and extend `test_every_tool_passes_the_cli_parser_with_all_of_its_arguments`. The server is a wrapper: rules live in `learn.py`, never duplicated in the server.
+- New `learn` command or option → expose it in `learn_server.py` (or consciously don't: `sync`, `init`, `knowledge import` and `knowledge export --format learnharness` — they read/write directories on the server's disk) and extend `test_every_tool_passes_the_cli_parser_with_all_of_its_arguments`. The server is a wrapper: rules live in `learn.py`, never duplicated in the server.
 - Anything that reads stdin must do it before the home lock is taken (see `main()`): a stalled client must not block every other writer.
 - Skills stay agent-neutral: tool names like `quiz`/`researcher` are optional, always give a text fallback. Keep frontmatter to `name` + `description`.
 - Learner-facing docs are in Russian; skills (agent instructions) are in English.

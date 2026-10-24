@@ -39,6 +39,17 @@ The makers below need subagents plus the `visual-tools` extension (the pi setup)
 
 The rest of this skill — when to draw, brief the idea down to its fewest elements, never decorate — applies on every rung. A missing visual is cheaper than a wrong one.
 
+## Dynamic ideas: build the instrument, don't describe it
+
+If the idea is *dynamic* — a parameter to sweep, a process to animate, a distribution to sample, a system to simulate — a static picture undersells it: ten seconds of dragging a slider teaches more than a paragraph about what the slider would do. When the environment can deliver an interactive page (an HTML artifact in the Claude app, a file the learner can open, a sub-agent that can build and test one):
+
+1. **Write a self-contained brief**: the concept, every control and what it changes, the formulas and constants, what should be visible, the visual style. Whoever builds it never sees the lesson — the brief is its whole world.
+2. **Test before showing**: a single-file HTML with no external dependencies beyond pinned CDN libraries, opened (headless if possible) to confirm it runs and the numbers are right. Nothing untested reaches the learner.
+3. **Teach with it**: refer to its controls by name ("drag damping all the way left and watch the overshoot"). An instrument you never point at is decoration.
+4. **While it is being built, keep teaching** the idea in prose; if building fails, say so and fall back to a static picture (the ladder above).
+
+No way to deliver interactivity (Telegram, plain chat) → a short table of values for 3–4 settings of the parameter does the same job in text: let him predict the next row before you reveal it.
+
 ## Choose the maker
 
 Two makers, discovered from the agents directory (`agents/` in this repo, `.pi/agents/` in pi):

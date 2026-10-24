@@ -10,6 +10,8 @@ Codex, OpenCode, pi, ...) because all state lives in plain files:
     plans/<slug>/plan.json   the plan (outcomes, units, lessons)
     plans/<slug>/progress.json  lesson results, review cards, activity events
     plans/<slug>/PLAN.md     generated, human-readable view (checkboxes)
+    knowledge.json           propositions + reasoning chains taught across all plans, practice outcomes
+                             (LearnHarness-compatible model: `learn knowledge import|export`)
 
 Typical flow:  init -> create -> (today -> teach -> done / card add / review grade)* -> sync
 To use it from any device, run `learn_server.py` on a VPS (MCP + REST over the same data).
@@ -20,13 +22,14 @@ import argparse
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -36,6 +39,7 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # find learn_graph.py next to the real file (symlink-safe)
 import learn_graph as G  # noqa: E402
+import learn_knowledge as K  # noqa: E402
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 # Retained only for migrating old cards and their compatibility `box` field.
@@ -989,6 +993,15 @@ def leech_mark(card):
     return f" ⚠ leech ({card['lapses']} lapses)" if card.get("leech") else ""
 
 
+def lesson_props(k, slug, lid):
+    return [{"id": p["id"], "name": p["name"], "statement": p["statement"]} for p in k["props"]
+            if not p.get("retired") and (slug, lid) in K.lessons_of_prop(p)]
+
+
+def probe_misconceptions(prog):
+    return [m for s_ in (prog.get("probe") or {}).get("strands", []) for m in s_["misconceptions"]]
+
+
 def cmd_today(args):
     st = Store(args)
     plans = st.select(args.plan)
@@ -999,6 +1012,7 @@ def cmd_today(args):
     lines = [f"📅 {iso(t)} ({DAYS[t.weekday()]}) · streak {data['streak']} · "
              f"language {data['language']} · chat_format {data['chat_format']}"]
     all_due = []
+    k = load_knowledge(st)
     for slug, plan, prog in plans:
         lpd = plan["pace"]["lessons_per_day"]
         done_today = len(lesson_events_on(prog, t))
@@ -1025,9 +1039,11 @@ def cmd_today(args):
                                                attempts=prog["lessons"].get(l["id"], {}).get("attempts", 0),
                                                **last_attempt(prog, l["id"]),
                                                track=units[l["id"]], track_title=utitle[units[l["id"]]],
-                                               requires=reqs[l["id"]] if gm else [])
+                                               requires=reqs[l["id"]] if gm else [],
+                                               propositions=lesson_props(k, slug, l["id"]))
                                           for l in todo],
-                              "pass_score": plan["pace"]["pass_score"]})
+                              "pass_score": plan["pace"]["pass_score"],
+                              "watch_for": probe_misconceptions(prog)})
         head = f"== {slug} — {plan['title']}: "
         if scheduled:
             head += f"{done_today}/{lpd} done today"
@@ -1040,6 +1056,8 @@ def cmd_today(args):
         if gm and scheduled:
             lines.append("  🗺 graph plan: lessons come from different tracks on purpose (interleaving). "
                          "After each `learn done`, re-run `learn today` — new lessons may unlock.")
+        if probe_misconceptions(prog) and todo:
+            lines.append("  ⚠ watch for (probe): " + "; ".join(probe_misconceptions(prog)))
         if pr["behind"]:
             lines.append(f"  behind by {pr['behind']} lesson(s): do NOT double up — keep the normal quota; the finish date moves"
                          + (f" (≈ {pr['projected_finish']})" if pr["projected_finish"] else ""))
@@ -1055,6 +1073,8 @@ def cmd_today(args):
                              + " (recall those first)")
             if l.get("nodes"):
                 lines.append("      key ideas: " + "; ".join(l["nodes"]))
+            for p in lesson_props(k, slug, l["id"]):
+                lines.append(f"      ◆ {p['id']} {p['statement']}")
             lines += lesson_history_lines(prog, l["id"])
         if scheduled and not todo and counts(plan, prog)["remaining"] == 0:
             lines.append("  plan complete 🎉")
@@ -1258,14 +1278,21 @@ def cmd_card_add(args):
         items = [{"q": args.q, "a": args.a}]
     if not isinstance(items, list) or not all(isinstance(i, dict) and i.get("q") and i.get("a") for i in items):
         raise LearnError("cards must be a list of objects with non-empty 'q' and 'a'")
+    shared = K.parse_ids(args.facts) if args.facts else []
+    k = load_knowledge(st) if shared or any(i.get("facts") for i in items) else None
     first_due = st.today + timedelta(days=1)
     new = []
     for i in items:
+        facts = list(dict.fromkeys([*shared, *(i.get("facts") or [])]))
+        if facts:
+            K.require_props(k, facts)
         cid = f"C{prog['next_card']:03d}"
         prog["next_card"] += 1
         card = {"id": cid, "lesson": args.lesson, "q": i["q"], "a": i["a"], "box": 1, "due": iso(first_due),
                 "reps": 0, "lapses": 0, "created": iso(st.today),
                 "srs": {"algorithm": "sm2", "ease": 2.5, "interval": 1, "successes": 0}}
+        if facts:
+            card["facts"] = facts
         prog["cards"].append(card)
         new.append(cid)
     st.save(slug, plan, prog)
@@ -1387,11 +1414,377 @@ def cmd_card_edit(args):
     if not card:
         raise LearnError(f"no such card: {cid}")
     changes = {k: v.strip() for k, v in (("q", args.q), ("a", args.a)) if v is not None}
-    if not changes or not all(changes.values()):
-        raise LearnError("pass a non-empty --q and/or --a")
+    if (not changes and args.facts is None) or not all(changes.values()):
+        raise LearnError("pass a non-empty --q and/or --a (or --facts)")
+    if args.facts is not None:
+        facts = K.parse_ids(args.facts)
+        K.require_props(load_knowledge(st), facts)
+        card["facts"] = facts
     card.update(changes, edited=iso(st.today))
     st.save(slug, plan, prog)
-    print(f"edited {slug}/{cid} — schedule unchanged (due {card['due']})")
+    print(f"edited {slug}/{cid} — schedule unchanged (due {card['due']})"
+          + (f"; tests {', '.join(card['facts'])}" if card.get("facts") else ""))
+
+
+# ----------------------------------------------------------------------------
+# knowledge: propositions, reasoning chains, practice, probe, history
+# ----------------------------------------------------------------------------
+
+def knowledge_path(st):
+    return st.home / "knowledge.json"
+
+
+def load_knowledge(st):
+    st.require_home()
+    return K.normalize(load_json(knowledge_path(st), {}))
+
+
+def save_knowledge(st, k):
+    save_json(knowledge_path(st), k)
+
+
+def lesson_source(st, plan_arg, lesson_id):
+    """{"plan", "lesson"} for a lesson of the selected plan (validated), or None without --lesson."""
+    if not lesson_id:
+        return None
+    slug, plan, _ = st.select_one(plan_arg)
+    return {"plan": slug, "lesson": find_lesson(plan, lesson_id)["id"]}
+
+
+def all_plans(st, slug=None):
+    return {s: st.load(s) for s in ([slug] if slug else st.slugs())}
+
+
+def read_stdin_json(args, what):
+    try:
+        return json.loads(args.stdin_text)
+    except (TypeError, json.JSONDecodeError) as e:
+        raise LearnError(f"stdin is not valid JSON ({what}): {e}")
+
+
+def prop_line(p):
+    kind = f" [{p['kind']}]" if p.get("kind") else ""
+    draft = " (draft — rewrite as one precise statement)" if p.get("draft") else ""
+    name = "" if p["name"] == p["statement"] else f"{p['name']} — "
+    return f"{p['id']}{kind} {name}{p['statement']}{draft}"
+
+
+def cmd_fact_add(args):
+    """Record propositions taught in a lesson (one true, self-contained statement each)."""
+    st = Store(args)
+    src = lesson_source(st, args.plan, args.lesson)
+    if args.stdin:
+        items = read_stdin_json(args, "a list of {name, statement, aliases?, kind?}")
+    elif args.statement:
+        items = [{"name": args.name, "statement": args.statement, "kind": args.kind}]
+    else:
+        raise LearnError("pass --statement (and --name), or --stdin with a JSON list of {name, statement, aliases?, kind?}")
+    if not isinstance(items, list) or not items or not all(isinstance(i, dict) and str(i.get("statement", "")).strip()
+                                                             for i in items):
+        raise LearnError("propositions must be a non-empty list of objects with a non-empty 'statement'")
+    k = load_knowledge(st)
+    lines = []
+    for i in items:
+        aliases = i.get("aliases") or []
+        if not isinstance(aliases, list):
+            raise LearnError("'aliases' must be a list of strings")
+        p, created = K.add_prop(k, iso(st.today), i.get("name"), i["statement"], aliases, i.get("kind"), src)
+        lines.append(("+ " if created else "= ") + prop_line(p) + ("" if created else "  (already known — linked)"))
+    save_knowledge(st, k)
+    where = f" for {src['plan']}/{src['lesson']}" if src else ""
+    print(f"propositions{where}:\n" + "\n".join(lines))
+
+
+def cmd_fact_edit(args):
+    st = Store(args)
+    k = load_knowledge(st)
+    p = K.require_props(k, [args.fact])[0]
+    if all(v is None for v in (args.name, args.statement, args.alias, args.kind)):
+        raise LearnError("pass --name, --statement, --alias and/or --kind")
+    K.edit_prop(p, args.name, args.statement, args.alias, args.kind)
+    save_knowledge(st, k)
+    print("edited " + prop_line(p))
+
+
+def cmd_fact_link(args):
+    """Attach propositions to the lesson that (also) teaches them — e.g. imported ones."""
+    st = Store(args)
+    src = lesson_source(st, args.plan, args.lesson)
+    k = load_knowledge(st)
+    props = K.require_props(k, K.parse_ids(args.facts))
+    for p in props:
+        K.add_source(p, src)
+    save_knowledge(st, k)
+    print(f"linked {', '.join(p['id'] for p in props)} to {src['plan']}/{src['lesson']}")
+
+
+def cmd_fact_retire(args):
+    st = Store(args)
+    k = load_knowledge(st)
+    p = K.require_props(k, [args.fact])[0]
+    used = [c["id"] for c in k["chains"] if args.fact in c["premises"] or c["conclusion"] == args.fact]
+    p["retired"] = True
+    save_knowledge(st, k)
+    print(f"retired {p['id']}" + (f" — still referenced by chain(s) {', '.join(used)}" if used else ""))
+
+
+def find_match(p, pattern):
+    if not pattern:
+        return True
+    rx = re.compile(".*".join(map(re.escape, pattern.split("*"))), re.I)
+    return any(rx.search(t) for t in [p["name"], p["statement"], *p["aliases"]])
+
+
+def cmd_fact_list(args):
+    st = Store(args)
+    k = load_knowledge(st)
+    if args.lesson:
+        src = lesson_source(st, args.plan, args.lesson)
+    plans = all_plans(st, args.plan)
+    rows = []
+    for p in k["props"]:
+        if p.get("retired") and not args.all:
+            continue
+        links = K.lessons_of_prop(p)
+        if args.plan and not any(sl == args.plan for sl, _ in links):
+            continue
+        if args.lesson and (src["plan"], src["lesson"]) not in links:
+            continue
+        if args.drafts and not p.get("draft"):
+            continue
+        if not find_match(p, args.find):
+            continue
+        rows.append(K.evidence(k, p, plans, st.today.toordinal()) | {"kind": p.get("kind"), "draft": p.get("draft", False),
+                                                                      "aliases": p["aliases"]})
+    rows = rows[: args.limit]
+    out = []
+    for r in rows:
+        out.append(prop_line(k_prop := K.by_id(k)[r["id"]]))
+        bits = [f"{l['plan']}/{l['lesson']} {l['status']}" + (f" {l['score']:.0%}" if l["score"] is not None else "")
+                for l in r["lessons"]]
+        if r["cards"]:
+            bits.append("cards " + ", ".join(c["card"] + (f" ✗{c['lapses']}" if c["lapses"] else "") for c in r["cards"]))
+        if r["practice"]["count"]:
+            bits.append(f"practice {r['practice']['count']}× (last {r['practice']['last']['outcome']})")
+        if any(s.get("lh") for s in k_prop["sources"]):
+            bits.append("from LearnHarness")
+        if bits:
+            out.append("   " + " · ".join(bits))
+    emit(args, rows, "\n".join(out) or "no propositions yet — record them with `learn fact add` after a lesson")
+
+
+def cmd_fact_seed(args):
+    """Migration for plans made before the knowledge layer: draft propositions from the lessons' key ideas."""
+    st = Store(args)
+    k = load_knowledge(st)
+    made = []
+    for slug, plan, prog in st.select(args.plan):
+        for l in lessons_of(plan):
+            if not args.all and lesson_state(prog, l["id"]) not in ("done", "retry"):
+                continue
+            for node in l.get("nodes", []):
+                p, created = K.add_prop(k, iso(st.today), node, node, source={"plan": slug, "lesson": l["id"]}, draft=True)
+                if created:
+                    made.append(f"{slug}/{l['id']}: {p['id']} {p['statement']}")
+    save_knowledge(st, k)
+    if not made:
+        print("nothing to seed — no new key ideas in the selected lessons")
+        return
+    print(f"seeded {len(made)} draft proposition(s) from lesson key ideas:\n  " + "\n  ".join(made)
+          + "\nRewrite each as one precise, self-contained statement (`learn fact edit P… --statement …`), "
+            "add the chains between them (`learn chain add`), and link existing cards (`learn card edit C… --facts P…`).")
+
+
+def cmd_chain_add(args):
+    st = Store(args)
+    src = lesson_source(st, args.plan, args.lesson)
+    k = load_knowledge(st)
+    c, created = K.add_chain(k, iso(st.today), K.parse_ids(args.premises), args.conclusion, src)
+    save_knowledge(st, k)
+    print(("+ " if created else "= ") + f"{c['id']}: {K.chain_text(k, c)}" + ("" if created else "  (already known — linked)"))
+
+
+def cmd_chain_list(args):
+    st = Store(args)
+    k = load_knowledge(st)
+    rows = [c for c in k["chains"] if not args.fact or args.fact in c["premises"] or c["conclusion"] == args.fact]
+    if args.plan:
+        rows = [c for c in rows if any(s.get("plan") == args.plan for s in c["sources"])]
+    emit(args, [dict(c, text=K.chain_text(k, c)) for c in rows],
+         "\n".join(f"{c['id']}: {K.chain_text(k, c)}" for c in rows) or "no reasoning chains yet")
+
+
+def cmd_practice_pick(args):
+    st = Store(args)
+    k = load_knowledge(st)
+    plans = all_plans(st, args.plan)
+    chosen, pool = K.pick(k, plans, st.today.toordinal(), args.count, iso(st.today))
+    data = {"targets": chosen, "pool": pool}
+    if not chosen:
+        emit(args, data, "no practice targets: record propositions for finished lessons first (`learn fact add`, "
+                         "or `learn fact seed` for older lessons)")
+        return
+    lines = [f"🎯 practice targets ({len(chosen)} of {pool}) — weakest first, interleaved; never name the target:"]
+    for e in chosen:
+        lesson = ", ".join(f"{l['plan']}/{l['lesson']}" for l in e["lessons"])
+        lines.append(f"  {e['id']} · {e['mode']}{' · RETEST in a fresh surface' if e['retest'] else ''} · {lesson}")
+        lines.append(f"      {e['statement']}")
+        for c in e["chains"]:
+            lines.append(f"      chain: {c}")
+        if e["reasons"]:
+            lines.append("      why: " + "; ".join(e["reasons"]))
+    lines.append("After each problem: `learn practice log --targets P… --mode … --outcome solved|hinted|missed|surrendered`.")
+    emit(args, data, "\n".join(lines))
+
+
+def cmd_practice_log(args):
+    st = Store(args)
+    k = load_knowledge(st)
+    ev = K.log_practice(k, iso(st.today), K.parse_ids(args.targets), args.mode, args.outcome,
+                        args.rung, args.miss, args.note)
+    save_knowledge(st, k)
+    nxt = {"solved": "next: one notch harder", "hinted": "next: hold the difficulty",
+           "missed": "next: one notch easier; retest it in a fresh surface before the session ends",
+           "surrendered": "next: retest it in a fresh surface before the session ends"}[args.outcome]
+    extra = "; a misconception — a few targeted nudges, or a repair lesson if it runs deep" if args.miss == "misconception" else ""
+    print(f"logged {args.mode} {args.outcome} for {', '.join(ev['targets'])}" +
+          (f" (R{args.rung})" if args.rung is not None else "") + f" — {nxt}{extra}")
+
+
+def cmd_probe_set(args):
+    """Save the placement probe: per strand, where the learner's edge sits and which wrong models showed up."""
+    st = Store(args)
+    slug, plan, prog = st.select_one(args.plan)
+    strands = read_stdin_json(args, "a list of {strand, floor, ceiling, misconceptions?, build_from?}")
+    if not isinstance(strands, list) or not strands:
+        raise LearnError("probe must be a non-empty list of strands")
+    clean = []
+    for s_ in strands:
+        if not isinstance(s_, dict) or not str(s_.get("strand", "")).strip() \
+                or not (str(s_.get("floor", "")).strip() or str(s_.get("ceiling", "")).strip()):
+            raise LearnError("each strand needs 'strand' and a 'floor' and/or 'ceiling' (what they get right / where it runs out)")
+        mis = s_.get("misconceptions") or []
+        if not isinstance(mis, list):
+            raise LearnError("'misconceptions' must be a list of strings")
+        clean.append({"strand": K.squash(s_["strand"]), "floor": K.squash(s_.get("floor", "")),
+                      "ceiling": K.squash(s_.get("ceiling", "")), "misconceptions": [K.squash(m) for m in mis if K.squash(m)],
+                      "build_from": K.squash(s_.get("build_from", ""))})
+    prog["probe"] = {"date": iso(st.today), "strands": clean}
+    st.save(slug, plan, prog)
+    print(f"probe saved for {slug}: {len(clean)} strand(s)")
+
+
+def probe_lines(probe):
+    out = []
+    for s_ in probe["strands"]:
+        out.append(f"  • {s_['strand']}: floor {s_['floor'] or '?'} · ceiling {s_['ceiling'] or '?'}"
+                   + (f" · build from {s_['build_from']}" if s_["build_from"] else ""))
+        for m in s_["misconceptions"]:
+            out.append(f"      ⚠ {m}")
+    return out
+
+
+def cmd_probe_show(args):
+    st = Store(args)
+    slug, plan, prog = st.select_one(args.plan)
+    probe = prog.get("probe")
+    emit(args, probe, f"probe for {slug} ({probe['date']}):\n" + "\n".join(probe_lines(probe)) if probe
+         else f"no probe saved for {slug} — after the placement, save it with `learn probe set --stdin`")
+
+
+def cmd_history(args):
+    """The learner's record, oldest first: lessons, recalls (with confidence), practice."""
+    st = Store(args)
+    st.require_home()
+    since = iso(st.today - timedelta(days=args.days - 1))
+    k = load_knowledge(st)
+    props = K.by_id(k)
+    rows = []
+    for slug in ([args.plan] if args.plan else st.slugs()):
+        plan, prog = st.load(slug)
+        titles = {l["id"]: l["title"] for l in lessons_of(plan)}
+        cards = {c["id"]: c for c in prog["cards"]}
+        for e in prog["events"]:
+            if e["date"] < since:
+                continue
+            if e["type"] == "lesson":
+                if args.lesson and e["id"] != args.lesson:
+                    continue
+                rec = prog["lessons"].get(e["id"], {})
+                rows.append({"date": e["date"], "plan": slug, "type": "lesson", "lesson": e["id"], "title": titles.get(e["id"]),
+                             "score": e.get("score"), "passed": e.get("passed"),
+                             "note": rec.get("note") if rec.get("noted") == e["date"] else None})
+            elif e["type"] == "review":
+                c = cards.get(e["id"].split("/", 1)[-1], {})
+                if args.lesson and c.get("lesson") != args.lesson:
+                    continue
+                rows.append({"date": e["date"], "plan": slug, "type": "review", "card": e["id"], "lesson": c.get("lesson"),
+                             "q": c.get("q"), "result": e["result"], "quality": e.get("quality"),
+                             "confidence": e.get("confidence")})
+    for e in k["practice"]:
+        if e["date"] < since:
+            continue
+        lessons = {sl_l for t in e["targets"] if t in props for sl_l in K.lessons_of_prop(props[t])}
+        if args.plan and not any(sl == args.plan for sl, _ in lessons):
+            continue
+        if args.lesson and not any(l == args.lesson for _, l in lessons):
+            continue
+        rows.append({"date": e["date"], "type": "practice", **e,
+                     "names": [props[t]["name"] for t in e["targets"] if t in props]})
+    order = {"review": 0, "lesson": 1, "practice": 2}
+    rows.sort(key=lambda r: (r["date"], order[r["type"]]))
+    rows = rows[-args.limit:]
+    out = []
+    for r in rows:
+        if r["type"] == "lesson":
+            out.append(f"{r['date']} {r['plan']}/{r['lesson']} lesson {'✓' if r['passed'] else '🔁'}"
+                       + (f" {r['score']:.0%}" if r["score"] is not None else "") + f" · {r['title']}"
+                       + (f" — {r['note']}" if r["note"] else ""))
+        elif r["type"] == "review":
+            out.append(f"{r['date']} {r['card']} recall {'✓' if r['result'] == 'pass' else '✗'}"
+                       + (f" q{r['quality']}" if r["quality"] is not None else "")
+                       + (f" @{r['confidence']}%" if r["confidence"] is not None else "") + f" · {r['q']}")
+        else:
+            out.append(f"{r['date']} practice {r['mode']} {r['outcome']}" + (f" R{r['rung']}" if "rung" in r else "")
+                       + (f" ({r['miss']})" if r.get("miss") else "") + " · " + ", ".join(r["names"])
+                       + (f" — {r['note']}" if r.get("note") else ""))
+    emit(args, rows, "\n".join(out) or f"nothing recorded in the last {args.days} days")
+
+
+def cmd_knowledge_export(args):
+    st = Store(args)
+    k = load_knowledge(st)
+    props = [p for p in k["props"] if not p.get("retired")
+             and (not args.plan or any(sl == args.plan for sl, _ in K.lessons_of_prop(p)))]
+    if args.format == "md":
+        titles = {(sl, l["id"]): l["title"] for sl in st.slugs() for l in lessons_of(st.load(sl)[0])}
+        print(K.to_markdown(k, props, titles))
+        return
+    nodes, chains, sources = K.to_lh(k, props, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"))
+    if args.format == "json":
+        print(json.dumps({"format": K.LH_FORMAT, "nodes": nodes, "chains": chains, "sources": sources},
+                         ensure_ascii=False, indent=2))
+        return
+    if not args.out:
+        raise LearnError("--format learnharness needs --out DIR (a new, empty directory)")
+    g = K.write_lh(args.out, nodes, chains, sources)
+    print(f"wrote a LearnHarness graph (format {K.LH_FORMAT}): {len(nodes)} propositions, {len(chains)} chains → {g}")
+
+
+def cmd_knowledge_import(args):
+    """Merge a LearnHarness graph (read-only on their side) into knowledge.json."""
+    st = Store(args)
+    src = lesson_source(st, args.plan, args.lesson)
+    k = load_knowledge(st)
+    stats, problems = K.import_lh(k, iso(st.today), args.learnharness, src)
+    save_knowledge(st, k)
+    print(f"imported from LearnHarness: {stats['props_new']} new / {stats['props_merged']} merged propositions, "
+          f"{stats['chains_new']} new / {stats['chains_merged']} merged chains"
+          + (f" — linked to {src['plan']}/{src['lesson']}" if src else "")
+          + (f"\n{unlinked} proposition(s) have no lesson yet — link them to the lessons that teach them: "
+             "`learn fact link --facts P… --lesson L…`" if (unlinked := sum(
+                 1 for p in k["props"] if not p.get("retired") and not K.lessons_of_prop(p))) else "")
+          + ("".join(f"\n  ⚠ {p}" for p in problems)))
 
 
 def mature_reviews(prog, since):
@@ -1441,6 +1834,15 @@ def cmd_week(args):
                       if mature else "no mature cards reviewed yet"),
                   f"  new cards: {row['new_cards']}" + (f" · ⚠ leeches: {row['leeches']}" if row["leeches"] else ""),
                   f"  active days: {len(days)}/7"]
+    k = load_knowledge(st)
+    prac = [e for e in k["practice"] if e["date"] >= since]
+    data["practice"] = {o: sum(1 for e in prac if e["outcome"] == o) for o in K.OUTCOMES}
+    data["practice"]["misconceptions"] = sum(1 for e in prac if e.get("miss") == "misconception")
+    if prac:
+        pr = data["practice"]
+        lines += ["", f"practice: {len(prac)} problem(s) — {pr['solved']} solved, {pr['hinted']} with hints, "
+                      f"{pr['missed'] + pr['surrendered']} missed" + (f" · ⚠ misconceptions: {pr['misconceptions']}"
+                                                                      if pr["misconceptions"] else "")]
     emit(args, data, "\n".join(lines))
 
 
@@ -1646,7 +2048,8 @@ def build_parser():
     p.add_argument("--lesson", required=True)
     p.add_argument("--q")
     p.add_argument("--a")
-    p.add_argument("--stdin", action="store_true", help='read JSON list [{"q":..,"a":..}] from stdin')
+    p.add_argument("--stdin", action="store_true", help='read JSON list [{"q":..,"a":..,"facts"?:["P003"]}] from stdin')
+    p.add_argument("--facts", help="propositions every new card tests, e.g. P003,P004 (see `learn fact`)")
     p.set_defaults(fn=cmd_card_add)
     p = card.add_parser("retire", parents=[common], help="stop reviewing a card")
     p.add_argument("card", help="C007 or slug/C007")
@@ -1656,6 +2059,7 @@ def build_parser():
     p.add_argument("card", help="C007 or slug/C007")
     p.add_argument("--q")
     p.add_argument("--a")
+    p.add_argument("--facts", help="replace the propositions the card tests, e.g. P003,P004")
     p.add_argument("--plan")
     p.set_defaults(fn=cmd_card_edit)
 
@@ -1681,6 +2085,101 @@ def build_parser():
 
     add("week", cmd_week, "last-7-days summary", plan=False)
 
+    fact = sub.add_parser("fact", help="propositions taught (knowledge graph)").add_subparsers(dest="sub", required=True,
+                                                                                             metavar="action")
+    p = fact.add_parser("add", parents=[common], help="record propositions taught in a lesson")
+    p.add_argument("--plan")
+    p.add_argument("--lesson", help="the lesson that taught them (recommended)")
+    p.add_argument("--name", help="short display label")
+    p.add_argument("--statement", help="one true, self-contained statement")
+    p.add_argument("--kind", choices=K.KINDS, help="truth = accepted at face value; derived = follows from others")
+    p.add_argument("--stdin", action="store_true", help='JSON list [{"name","statement","aliases"?,"kind"?}] on stdin')
+    p.set_defaults(fn=cmd_fact_add)
+    p = fact.add_parser("edit", parents=[common], help="rewrite a proposition (the old statement becomes an alias)")
+    p.add_argument("fact", help="P003")
+    p.add_argument("--name")
+    p.add_argument("--statement")
+    p.add_argument("--alias", help="add another phrasing of the same proposition")
+    p.add_argument("--kind", choices=K.KINDS)
+    p.set_defaults(fn=cmd_fact_edit)
+    p = fact.add_parser("link", parents=[common], help="attach propositions to a lesson that teaches them")
+    p.add_argument("--facts", required=True, help="P003,P004")
+    p.add_argument("--lesson", required=True)
+    p.add_argument("--plan")
+    p.set_defaults(fn=cmd_fact_link)
+    p = fact.add_parser("retire", parents=[common], help="stop using a proposition (it stays in the record)")
+    p.add_argument("fact")
+    p.set_defaults(fn=cmd_fact_retire)
+    p = fact.add_parser("list", parents=[common], help="propositions with their evidence (lessons, cards, practice)")
+    p.add_argument("--plan")
+    p.add_argument("--lesson")
+    p.add_argument("--find", help="substring search in name/statement/aliases; * is a wildcard")
+    p.add_argument("--drafts", action="store_true", help="only seeded drafts still to be rewritten")
+    p.add_argument("--all", action="store_true", help="include retired propositions")
+    p.add_argument("--limit", type=int, default=100)
+    p.set_defaults(fn=cmd_fact_list)
+    p = fact.add_parser("seed", parents=[common], help="migration: draft propositions from finished lessons' key ideas")
+    p.add_argument("--plan")
+    p.add_argument("--all", action="store_true", help="every lesson, not only done/retry ones")
+    p.set_defaults(fn=cmd_fact_seed)
+
+    chain = sub.add_parser("chain", help="reasoning chains: premises that jointly imply a conclusion").add_subparsers(
+        dest="sub", required=True, metavar="action")
+    p = chain.add_parser("add", parents=[common], help="record premises ⟹ conclusion")
+    p.add_argument("--premises", required=True, help="P001,P002 (used together)")
+    p.add_argument("--conclusion", required=True, help="P003")
+    p.add_argument("--lesson")
+    p.add_argument("--plan")
+    p.set_defaults(fn=cmd_chain_add)
+    p = chain.add_parser("list", parents=[common], help="list chains")
+    p.add_argument("--fact", help="only chains with this proposition")
+    p.add_argument("--plan")
+    p.set_defaults(fn=cmd_chain_list)
+
+    prac = sub.add_parser("practice", help="practice targets and outcomes (see skills/practice)").add_subparsers(
+        dest="sub", required=True, metavar="action")
+    p = prac.add_parser("pick", parents=[common], help="weakest propositions to practise, interleaved, with a mode")
+    p.add_argument("--plan")
+    p.add_argument("-n", "--count", dest="count", type=int, default=3)
+    p.set_defaults(fn=cmd_practice_pick)
+    p = prac.add_parser("log", parents=[common], help="record one practice problem's outcome")
+    p.add_argument("--targets", required=True, help="propositions the problem exercised, P003,P004")
+    p.add_argument("--mode", required=True, choices=K.MODES)
+    p.add_argument("--outcome", required=True, choices=K.OUTCOMES)
+    p.add_argument("--rung", type=int, help="highest hint given, 0..5 (R0 redirect … R5 worked step)")
+    p.add_argument("--miss", choices=K.MISSES, help="what kind of miss")
+    p.add_argument("--note", help="one line")
+    p.set_defaults(fn=cmd_practice_log)
+
+    probe = sub.add_parser("probe", help="the placement probe: per-strand edge and misconceptions").add_subparsers(
+        dest="sub", required=True, metavar="action")
+    p = probe.add_parser("set", parents=[common], help='save it: JSON list [{"strand","floor","ceiling","misconceptions"?,'
+                                                       '"build_from"?}] on stdin')
+    p.add_argument("--plan")
+    p.add_argument("--stdin", action="store_true", required=True)
+    p.set_defaults(fn=cmd_probe_set)
+    p = probe.add_parser("show", parents=[common], help="show the saved probe")
+    p.add_argument("--plan")
+    p.set_defaults(fn=cmd_probe_show)
+
+    p = add("history", cmd_history, "the learner's record: lessons, recalls with confidence, practice")
+    p.add_argument("--lesson")
+    p.add_argument("--days", type=int, default=30)
+    p.add_argument("--limit", type=int, default=200)
+
+    kn = sub.add_parser("knowledge", help="import/export the knowledge graph (LearnHarness format)").add_subparsers(
+        dest="sub", required=True, metavar="action")
+    p = kn.add_parser("export", parents=[common], help="md (notes; LearnHarness notes import), json, or learnharness (graph dir)")
+    p.add_argument("--format", choices=["md", "json", "learnharness"], default="md")
+    p.add_argument("--out", help="learnharness: new directory to write graph/ into")
+    p.add_argument("--plan")
+    p.set_defaults(fn=cmd_knowledge_export)
+    p = kn.add_parser("import", parents=[common], help="merge a LearnHarness graph (data dir or its graph/), read-only there")
+    p.add_argument("--learnharness", required=True, metavar="DIR")
+    p.add_argument("--lesson", help="link every imported proposition to this lesson")
+    p.add_argument("--plan")
+    p.set_defaults(fn=cmd_knowledge_import)
+
     p = add("nudge", cmd_nudge, "daily reminder text (empty output = nothing to do)", plan=False)
     p.add_argument("--language", help="override config language (ru/en)")
     p.add_argument("--cta", default="/daily-lesson", help="what the learner should send to start (default /daily-lesson)")
@@ -1699,7 +2198,7 @@ def main(argv=None):
     try:
         with home_lock(home_dir(args)):
             args.fn(args)
-    except LearnError as e:
+    except (LearnError, K.KnowledgeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     except BrokenPipeError:

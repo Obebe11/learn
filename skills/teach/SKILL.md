@@ -18,7 +18,7 @@ This skill runs in many agents (pi, Hermes via Telegram, Claude Code, Codex, Ope
 | `quiz` (graded popup) | use it | text quiz in chat: question + options A–D, one per message, the answer is **never** shown before he replies; after the reply give ✅/❌, the right option and the explanation |
 | `ask_user_question` (no-right-answer fork) | use it | ask in plain text, offer numbered choices |
 | `researcher` subagent | use it for every doubt | a web-search/fetch tool yourself; with none, **say plainly that a claim is unverified** and keep it out of the foundations |
-| `visualize` makers | per that skill | per that skill's fallback ladder (ASCII sketch in a code block) |
+| `visualize` makers | per that skill (pictures, and interactive demos for dynamic ideas) | per that skill's fallback ladder (ASCII sketch in a code block) |
 | LaTeX (`$…$`) | when the viewer renders it (Obsidian, Claude app, markdown viewers, **Telegram with rich messages on** — `chat_format rich`) | plain chat paths (Telegram without rich, WhatsApp) don't render LaTeX: write plain text/Unicode — `x² + 3x = 0`, `√2`, `a/b` — and keep code in backticks |
 
 Everything below says `quiz` / `ask_user_question` / `researcher`; read that as "that tool, or its fallback".
@@ -187,3 +187,15 @@ In the original setup everything written in a session is rendered to him through
 - Centered display math: `$$` fenced on its own lines, e.g. `$$\n f(x) \n$$`
 
 If LaTeX can be used, it should be. Write $f(x) = x^2$, not `f(x) = x^2`.
+
+## Formatting — structure, and one emphasis device
+
+He reads documents, not chat bubbles: where markdown renders, use headings, lists, tables and code blocks whenever they make content readable at a glance. The one emphasis device for load-bearing ideas is a callout — `> [!IMPORTANT]` in Obsidian/GitHub, a plain `>` quote in Telegram rich, a line starting with `❗` in plain chat. Use it sparingly: an unconditional truth as it is laid down, the payoff when it lands, the definition a whole chain hinges on. If everything is boxed, nothing is.
+
+## His own material
+
+When he mentions notes, a book chapter, a PDF or code of his, find and read it yourself (search by name, narrow, read the right passage) — never ask him to paste it. Ground the lesson in his material rather than his description of it, and cite PDF pages ("p. 42"). Read-only: never modify his files.
+
+## Uncertainty you flagged
+
+Keep a running list of every claim you marked as uncertain during the session. Before the session ends, revisit each one: verify it, correct it openly, or leave it explicitly marked as unverified — never let a flagged doubt quietly become part of the foundation.
