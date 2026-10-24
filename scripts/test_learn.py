@@ -1003,7 +1003,7 @@ class TestGraphViews(GraphBase):
             label = list(group.iter(ns + "text"))[-1]
             w = G._text_w(label.text or "", float(label.get("font-size")), label.get("font-weight") == "bold")
             captions[nid] = (float(label.get("x")) - w / 2, float(label.get("y")) - 9, w, 12)
-        paths = [p for p in root.iter(ns + "path") if p.get("marker-end")]
+        paths = [p for p in root.iter(ns + "path") if p.get("class") == "edge"]
         _, _, row, _ = G._compact_layout(model)
         self.assertEqual(len(paths), len(model["edges"]) + sum(r == max(row.values()) for r in row.values()))
         for path, (a, b) in zip(paths, model["edges"]):
@@ -1024,6 +1024,43 @@ class TestGraphViews(GraphBase):
                     for n, (lx, ly, w, h) in captions.items():
                         if n not in (a, b):
                             self.assertFalse(lx - 1 < x < lx + w + 1 and ly - 1 < y < ly + h + 1, (a, b, n))
+
+    def test_svg_draws_the_same_in_imagemagick_as_in_a_browser(self):
+        # ImageMagick's own SVG renderer (`convert` on stock Ubuntu/Debian) ignores opacity, paint-order and
+        # markers: the speed badge became a solid block, halos erased every label and arrows had no heads.
+        import xml.etree.ElementTree as ET
+        import learn_graph as G
+        plan = json.loads(json.dumps(GRAPH_PLAN))
+        plan["units"] = [{"id": f"T{u}", "title": f"Track {u}", "lessons": [
+            lesson(f"T{u}L{i}", f"Topic {i}", **({"requires": [f"T{u - 1}L1"]} if u and not i else {}))
+            for i in range(4)]} for u in range(6)]
+        prog = {"lessons": {"T0L0": {"status": "done"}}, "events": []}
+        model = G.build_model(plan, prog)
+        speed = {"speed": 0.3, "lessons_per_day": 0.4, "needed_per_day": 1.4}
+        for picks in ((), ("T0L1",)):
+            svg = G.render_svg("Example", plan, prog, model, speed=speed, picks=picks)
+            for banned in ("opacity", "paint-order", "marker", "rgba("):
+                self.assertNotIn(banned, svg)
+            root = ET.fromstring(svg)
+            ns = "{http://www.w3.org/2000/svg}"
+            edges = [e for e in root.iter() if e.get("class") == "edge"]
+            arrows = [e for e in root.iter(ns + "polygon") if e.get("class") == "arrow"]
+            self.assertEqual(len(arrows), len(edges))
+            self.assertGreaterEqual(len(edges), len(model["edges"]))
+            for e, arrow in zip(edges, arrows):
+                self.assertEqual(arrow.get("fill"), e.get("stroke"))
+            # Every outlined label: the white outline first, the letters on top, at the same place.
+            texts = list(root.iter(ns + "text"))
+            for k, t in enumerate(texts):
+                if t.get("stroke") == "#ffffff":
+                    top = texts[k + 1]
+                    self.assertEqual((top.text, top.get("x"), top.get("y")), (t.text, t.get("x"), t.get("y")))
+                    self.assertNotEqual(top.get("fill"), "#ffffff")
+            badge = next(r for r in root.iter(ns + "rect") if r.get("stroke") == "#c62828")
+            self.assertEqual(badge.get("fill"), G._tint("#c62828", 0.1))
+        self.assertEqual(G._tint("#c62828", 0.1), "#f9eaea")
+        self.assertEqual(G._tint("#fff", 0.5), "#ffffff")
+        self.assertEqual(G._tint("#000000", 1), "#000000")
 
     def test_node_fill_is_status_outline_is_track_and_convergence_is_a_diamond(self):
         import xml.etree.ElementTree as ET
