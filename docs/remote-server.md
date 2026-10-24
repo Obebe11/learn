@@ -25,7 +25,6 @@
 ```bash
 git clone https://github.com/obebe11/learn ~/learn
 ln -sf ~/learn/scripts/learn.py ~/.local/bin/learn
-sudo apt install librsvg2-bin pngquant                   # rsvg-convert: карта картинкой (PNG) за доли секунды; без него — медленный ImageMagick
 learn init --language ru --timezone Europe/Moscow        # каталог данных ~/learning (если его ещё нет)
 
 # секретный токен — единственный ключ к вашим данным
@@ -101,13 +100,6 @@ curl -H "$H" -d '{"json":true}' $API/learn_status                       # {"ok":
 curl -H "$H" $API                                                       # список инструментов со схемами аргументов
 ```
 
-Карта прогресса картинкой — прямо в браузере телефона (PNG; `&format=svg` — векторная, `&scale=3` — ещё чётче):
-
-```bash
-curl -H "$H" -o map.png "$API/learn_graph_image?raw=1"
-# закладка: https://learn.example.com/t/<токен>/api/tools/learn_graph_image?raw=1
-```
-
 GET разрешён только для инструментов, которые ничего не меняют, поэтому закладку в браузере телефона `https://learn.example.com/t/<токен>/api/tools/learn_status?raw=1` можно безопасно открывать сколько угодно раз. Коды ответов: `400` — неверные аргументы, `401` — токен, `404` — нет такого инструмента, `422` — `learn` отказал (например, «no such lesson»).
 
 ### Hermes + Telegram на том же VPS
@@ -122,14 +114,14 @@ GET разрешён только для инструментов, которы�
 |---|---|
 | Занятие | `learn_today`, `learn_next`, `learn_done`, `learn_skip`, `learn_graph` |
 | Повторения | `learn_card_add`, `learn_card_retire`, `learn_review_due`, `learn_review_next`, `learn_review_grade` |
-| Прогресс | `learn_status`, `learn_graph_image`, `learn_plans`, `learn_week`, `learn_nudge` |
+| Прогресс | `learn_status`, `learn_graph`, `learn_plans`, `learn_week`, `learn_nudge` |
 | Планы | `learn_create` (план — JSON-объект в аргументе; `update: true` сохраняет прогресс), `learn_show`, `learn_validate`, `learn_start`, `learn_set_plan_status` |
 | Профиль и настройки | `learn_profile_get`, `learn_profile_set`, `learn_config_get`, `learn_config_set` |
 | Знания | `learn_fact_add`, `learn_fact_edit`, `learn_fact_link`, `learn_fact_retire`, `learn_fact_list`, `learn_fact_seed`, `learn_chain_add`, `learn_chain_list`, `learn_knowledge_export` (md или json) — см. [knowledge.md](knowledge.md) |
 | Практика и проба | `learn_practice_pick`, `learn_practice_log`, `learn_probe_set`, `learn_probe_show`, `learn_history` |
 | Методика | `learn_skill` (без имени — список; `daily-lesson`, `study-plan`, `teach`, `practice`, `visualize`) |
 
-**Карта картинкой — `learn_graph_image`.** Спросите «как мой прогресс?» или «покажи карту» — модель вызовет его (сервер сам подсказывает это в `instructions`) и получит PNG прямо в ответе инструмента (MCP-блок `image`), а копия ляжет на сервер в `~/learning/plans/<план>/graph.png`. На картинке: все уроки и зависимости (для широкого плана — компактный граф с цветной легендой веток); круг — урок, ромб — соединение нескольких предпосылок. Цвет контура и стрелок — ветка; заливка: зелёная — пройдено, жёлтая — доступно, оранжевая — требует повторения, серая — недоступно. Золотое кольцо — уроки на сегодня; ветки плавно смещаются к соединениям, каждый уровень уплотняется отдельно; под графом — цель плана с общим процентом; в шапке — общий прогресс, что учить сегодня и плашка **скорости**. По умолчанию картинка подогнана под телефон (не шире 1400 px, подписи не мельче 14 px, целевой вес — около 1 МБ; большой план может весить больше ради читаемости); число веток не скрывает уроки. Аргументы: `track` — одна ветка со всеми уроками, `full: true` — естественный размер без ограничений телефона, `scale` 1–4 — точная плотность, `level: units` — одна точка на ветку, `format: svg` — векторный файл (если на сервере нет `rsvg-convert`, PNG не получится — инструмент так и скажет). Покажет ли клиент картинку вам, а не только модели, зависит от клиента; надёжный путь на телефоне — закладка из раздела REST.
+**Карта — `learn_graph`.** Спросите «как мой прогресс?» или «покажи карту» — модель вызовет `learn_graph` (сервер сам подсказывает это в `instructions`) и покажет карту текстом: ветки цепочками, точки соединения и что готово сейчас. `view: md` — таблица, `view: mermaid` — диаграмма для клиентов, которые её рисуют; `track` — одна ветка, `level: units` — одна строка на ветку.
 
 Нет `learn_sync`: источник истины один, сливать нечего. Нет `learn init`: каталог создаётся один раз при установке. Нет `learn knowledge import` и `export --format learnharness`: они читают и пишут каталоги на диске, а у клиента нет доступа к диску сервера; импорт из LearnHarness делайте на машине, где лежат его данные, а потом `learn sync`. Каталог данных клиент выбрать не может — он задаётся при запуске сервера.
 
