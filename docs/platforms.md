@@ -4,7 +4,7 @@
 
 | Слой | Что это | Зависит от среды? |
 |---|---|---|
-| **Методика** | `skills/` — открытый формат `SKILL.md` ([Agent Skills](https://agentskills.io/home)): `teach`, `study-plan`, `daily-lesson`, `visualize` | нет — один и тот же текст |
+| **Методика** | `skills/` — открытый формат `SKILL.md` ([Agent Skills](https://agentskills.io/home)): `teach`, `practice`, `study-plan`, `daily-lesson`, `visualize` | нет — один и тот же текст |
 | **Память** | `scripts/learn.py` + каталог данных `~/learning` (JSON/Markdown) | нет — чистый Python 3.9+, без зависимостей |
 | **Инструменты UI** | pi-расширения `quiz`, `ask-user-question`, `md-log`, визуальные субагенты | да — это необязательные «апгрейды»; без них скиллы переходят на текстовые аналоги |
 

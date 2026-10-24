@@ -49,11 +49,11 @@ python3 "$REPO/scripts/learn.py" init "${init_args[@]}"
 
 # 3. skills
 mkdir -p "$HERMES_HOME/skills"
-for s in teach visualize study-plan daily-lesson; do
+for s in teach practice visualize study-plan daily-lesson; do
   rm -rf "$HERMES_HOME/skills/$s"
   cp -R "$REPO/skills/$s" "$HERMES_HOME/skills/$s"
 done
-echo "✔ skills copied to $HERMES_HOME/skills (teach, visualize, study-plan, daily-lesson)"
+echo "✔ skills copied to $HERMES_HOME/skills (teach, practice, visualize, study-plan, daily-lesson)"
 
 # 4. reminder script for `hermes cron create --no-agent` (scripts must live in $HERMES_HOME/scripts)
 mkdir -p "$HERMES_HOME/scripts"

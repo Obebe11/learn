@@ -141,7 +141,7 @@ class TestProtocol(Base):
         self.tool("learn_card_add", {"lesson": "L01", "cards": [{"q": "q", "a": "a"}]})
         sample = {"plan": "py", "track": "U1", "max_reviews": 3, "count": 1, "view": "md", "level": "units", "md": True,
                   "lesson": "L03", "score": 0.5, "note": "n", "accept": True, "force": True, "card": "py/C001",
-                  "result": "pass", "quality": 4, "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
+                  "result": "pass", "quality": 4, "confidence": 70, "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
                   "content": "# me", "key": "language", "value": "ru", "language": "ru", "cta": "/x", "markdown": True,
                   "all": True, "limit": 5, "name": "teach", "json": True, "cards": [{"q": "q2", "a": "a2"}],
                   "format": "svg", "scale": 1.5, "full": True, "text": "-stopped at step 2", "q": "-q", "a": "-a"}
