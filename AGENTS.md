@@ -7,6 +7,7 @@ Personal long-term learning system. Portable core: **skills** (Agent Skills `SKI
 - `skills/teach` — the teaching method (unconditional truths first; "how could I have discovered this?"; probe → plan → teach).
 - `skills/study-plan` — build/revise a plan from a goal (backward design) and track progress.
 - `skills/daily-lesson` — run one session: spaced-review warm-up → 1–2 lessons → wrap-up. Includes chat/Telegram mode.
+- `skills/practice` — problems that make taught ideas come to mind unnamed: recall / discrimination / composition, hint ladder, fresh-surface retests. Used by `review` lessons.
 - `skills/visualize` — minimal diagrams, with fallbacks for chat apps.
 - `scripts/learn_graph.py` — knowledge-graph logic (tracks, junctions, day picking, text/md/mermaid/svg renderers), imported by `learn.py`.
 - `scripts/learn.py` — state CLI (`learn today | done | card add | review grade | status | nudge | sync …`). Tests: `python3 scripts/test_learn.py`.
@@ -20,6 +21,7 @@ Personal long-term learning system. Portable core: **skills** (Agent Skills `SKI
 1. No plan yet or "I want to learn X" → follow `skills/study-plan`.
 2. Plan exists and learner wants to study / continue / answered a reminder → follow `skills/daily-lesson`.
 3. Explaining anything → follow `skills/teach`.
+4. "Give me problems" / "test me on X" / a `review` lesson → follow `skills/practice`.
 
 User state lives in `$LEARN_HOME` (default `~/learning`), never in this repo. Run `learn` (or `python3 scripts/learn.py`) for every read/write of progress; don't hand-edit `progress.json`.
 

@@ -45,6 +45,8 @@ MAX_REVIEW_INTERVAL = 36500  # practical 100-year ceiling, not part of SM-2
 # graded today), clamped so a quiet day still warms up and a backlog never becomes a marathon.
 AUTO_REVIEWS = (6, 30)
 MAX_REVIEWS = 50
+FRAGILE_CONFIDENCE = 50  # a correct recall the learner rated below a coin flip is fragile or lucky
+CONFIDENT_MISS = 80  # a wrong recall the learner was this sure of is a misconception, not a gap
 LEECH_LAPSES = 4  # a card forgotten this often needs rewriting or a repaired prerequisite, not more drilling
 MATURE_DAYS = 21  # a recall after a gap this long counts towards long-term retention
 KINDS = {"lesson", "review", "milestone", "junction"}
@@ -1322,6 +1324,12 @@ def cmd_review_grade(args):
     quality = args.quality if args.quality is not None else (4 if args.result == "pass" else 1)
     if (quality >= 3) != (args.result == "pass"):
         raise LearnError("quality 3..5 requires pass; quality 0..2 requires fail")
+    conf = args.confidence
+    if conf is not None and not 0 <= conf <= 100:
+        raise LearnError("confidence is 0..100 (the learner's stated chance that the answer is right)")
+    capped = args.result == "pass" and conf is not None and conf < FRAGILE_CONFIDENCE and quality > 3
+    if capped:
+        quality = 3  # a pass the learner didn't trust is fragile or lucky: keep the interval short
     if card.get("retired"):
         raise LearnError(f"card {cid} is retired")
     if card.get("last") == iso(st.today):
@@ -1343,12 +1351,19 @@ def cmd_review_grade(args):
     card["last"] = iso(st.today)
     prog["events"].append({"date": iso(st.today), "type": "review", "id": f"{slug}/{cid}",
                            "result": args.result, "quality": quality, "scheduler": "sm2",
-                           "interval": days, "ease": state["ease"], "delay": delay})
+                           "interval": days, "ease": state["ease"], "delay": delay,
+                           **({"confidence": conf} if conf is not None else {})})
     st.save(slug, plan, prog)
     leech = "" if ok or card["lapses"] < LEECH_LAPSES else \
         f"\n⚠ leech: forgotten {card['lapses']} times — rewrite it (`learn card edit`) or repair the idea it rests on"
+    signal = ""
+    if capped:
+        signal = f"\nfragile: correct at {conf}% confidence — graded q3 so it comes back sooner; one reinforcing line, no praise"
+    elif not ok and conf is not None and conf >= CONFIDENT_MISS:
+        signal = (f"\n⚠ confident miss ({conf}%): likely a misconception, not a gap — find the wrong model "
+                  "behind the answer and repair it; revealing the right answer is not enough")
     print(f"{slug}/{cid}: {'✓' if ok else '✗'} → SM-2 q{quality}, EF {state['ease']:g}, "
-          f"next review in {days}d ({card['due']}){leech}")
+          f"next review in {days}d ({card['due']}){leech}{signal}")
 
 
 def cmd_card_retire(args):
@@ -1659,6 +1674,8 @@ def build_parser():
     p.add_argument("card", help="C007 or slug/C007")
     p.add_argument("result", choices=["pass", "fail"])
     p.add_argument("--quality", type=int, choices=range(6), help="SM-2 recall quality 0..5 (pass defaults to 4, fail to 1)")
+    p.add_argument("--confidence", type=int, help="learner's stated confidence 0..100 that the answer was right: "
+                   f"a pass below {FRAGILE_CONFIDENCE} is capped at q3, a fail at {CONFIDENT_MISS}+ is flagged as a misconception")
     p.add_argument("--plan")
     p.set_defaults(fn=cmd_review_grade)
 

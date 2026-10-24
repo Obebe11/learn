@@ -33,9 +33,9 @@ If `learn today` says **graph plan**, the plan is a map of parallel *tracks* (Py
 Use the shared daily budget (config `daily_reviews`; default `auto` = the cards due today, at least 6, at most 30, across all chats/plans), not a fresh batch at every lesson start. If `learn today` warns about a **review backlog**, tell the learner once in one line and make fewer cards today (one per lesson); offer `learn config daily_reviews <n>` only if they have the time.
 
 1. Call `learn review next` for ONE question immediately before asking it. It saves the presentation separately from recall; `learn today` / `learn review due` are only previews. Never prefetch several questions. A null `card` means stop the warm-up and teach the lesson, even if a backlog remains. Pass `--max-reviews` only if the learner asks for extra reviews.
-2. Ask the returned question **closed-book** — never show its stored answer first. One card per message, then wait. Where possible use a fresh equivalent example testing the same fact, with the same correct reasoning; do not change what the card tests or invent new card IDs for wording variants.
+2. Ask the returned question **closed-book** — never show its stored answer first. Ask for one line of reasoning and how sure they are (0–100%, or sure / fairly sure / guessing → ≈90 / 70 / 30). One card per message, then wait. Where possible use a fresh equivalent example testing the same fact, with the same correct reasoning; do not change what the card tests or invent new card IDs for wording variants.
 3. Judge the first unaided reply: lenient on wording, strict on substance. Assign SM-2 `quality`: 5 = complete and confident; 4 = correct with minor hesitation; 3 = correct with substantial difficulty; 2 = incorrect but recognised after explanation; 1 = incorrect, partial recognition; 0 = no recall. Do not infer difficulty from chat response time. Missing a material part or needing an answer-revealing hint means 0..2, not a pass.
-4. **Record immediately, before another question or lesson**: `learn review grade <plan>/<card> pass|fail --quality <0..5>` (3..5 = pass, 0..2 = fail). Check success; only then say it was saved. `pass|fail` without quality remains compatible (4/1). The scheduler calculates each card's next due date from its own interval, successful-recall streak and ease factor; never set dates from chat history.
+4. **Record immediately, before another question or lesson**: `learn review grade <plan>/<card> pass|fail --quality <0..5> [--confidence <0..100>]` (3..5 = pass, 0..2 = fail). With a confidence the CLI grades a low-confidence pass as fragile (q3, back sooner) and flags a confident miss — that is a misconception: repair the wrong model behind it, don't just show the answer. Check success; only then say it was saved. `pass|fail` without quality remains compatible (4/1). The scheduler calculates each card's next due date from its own interval, successful-recall streak and ease factor; never set dates from chat history.
 5. Reveal the answer in one line; if wrong, briefly repair the gap. A corrected answer after seeing the solution is practice, not another scheduled grade. Do not loop a failed question on every lesson start; its next scheduled review is tomorrow. Repeat from step 1 until `card` is null or the learner wants to move on.
 6. **Leech** (`card.leech` true, "⚠ leech": forgotten 4+ times): drilling it again won't help. After grading, find out why it slips — the card is ambiguous or tests two things, or the idea under it is shaky. Rewrite it with `learn card edit <plan>/<card> --q "…" --a "…"` (schedule and history stay), repair the underlying idea, or retire it if it no longer serves an outcome.
 
@@ -45,24 +45,25 @@ Why first: pulling answers out of memory *before* re-exposure is what builds ret
 
 ## 2. Lessons (for each lesson in today's list)
 
-Use the `teach` skill's **Phase 3 loop** (motivate → establish → connect → quiz-check) over the lesson's `nodes`. Phases 1–2 (probe, plan) were done when the plan was made — don't repeat them, but if the warm-up exposes a shaky prerequisite, repair it first (a few minutes) rather than building on sand. Accuracy rules of `teach` still apply: verify anything you're not certain of (web search / `researcher`) before stating it.
+Use the `teach` skill's **Phase 3 loop** (one reasoning step at a time, each a predict → teach → check cycle) over the lesson's `nodes`. Phases 1–2 (probe, plan) were done when the plan was made — don't repeat them, but if the warm-up exposes a shaky prerequisite, repair it first (a few minutes) rather than building on sand. Accuracy rules of `teach` still apply: verify anything you're not certain of (web search / `researcher`) before stating it.
 
 **Shape (≈ 20–25 min):**
 
 1. **Why** (1–2 messages): the problem this lesson solves; tie to the previous lesson and the learner's goal.
-2. **Build** in small steps — *one idea per message*, each motivated ("how could you have discovered this?"). Socratic where the learner can plausibly reason it out; narrate otherwise. Stop to check understanding after each key idea, not only at the end.
-3. **Check** (3–5 questions, graded): match the lesson's `check` and the verb in its `objective`. Include at least one question from an *earlier* lesson (interleaving). Questions need a right answer; follow `teach`'s quiz-option construction rules (bare claims, parallel wording, plausible distractors, no justification inside options).
+2. **Build** in small steps — *one idea per message*, each motivated ("how could you have discovered this?"). Open each step with a short prediction question ("what do you think has to change?") and start the explanation by resolving their guess; close it with a check. Socratic where the learner can plausibly reason it out; narrate otherwise. Don't announce the structure ("Step 2 of 4: …") — just teach.
+   - **The lesson is a hypothesis.** If an answer shows a missing prerequisite or a deeper confusion than expected, stop and build that ground first, one checked step at a time — never a wall of text to get back on schedule. If the lesson can't be finished today, checkpoint it with `learn note` and say so; an unfinished lesson is not a failure.
+3. **Check** (3–5 questions, graded): match the lesson's `check` and the verb in its `objective`. Prefer questions that *use* the idea on a new case over recalling the wording; ask for confidence and a line of reasoning — a confident wrong answer is a misconception to name in the `--note`. Include at least one question from an *earlier* lesson (interleaving). Questions need a right answer; follow `teach`'s quiz-option construction rules (bare claims, parallel wording, plausible distractors, no justification inside options).
 4. **Score** = correct ÷ asked. Record immediately: `learn done <L-id> --score 0.8 --note "confused X with Y"`.
    - Below the pass bar → the CLI marks `retry`: spend a few minutes repairing the exact gap, but **don't loop all day** — tomorrow's session re-teaches it first.
    - Use `--accept` only if the learner clearly has it and the quiz was flawed.
 5. **Make review cards** — **2 per lesson** (3 only for a dense lesson; 1 when `today` warns about a backlog), atomic and *why/how*-oriented, answerable in a sentence — not trivia: `learn card add --lesson <L-id> --stdin` with `[{"q":"…","a":"…"}]`. Cards are what keep today's lesson alive in month three, but each one costs several reviews a month for months: two good cards beat four mediocre ones.
 
-Milestone lessons (`kind: milestone`): the learner produces the artifact or performance named in the unit's pass bar; judge it against that bar and say specifically what met it and what didn't. `review` lessons: mixed, cumulative questions across the unit, no new material.
+Milestone lessons (`kind: milestone`): the learner produces the artifact or performance named in the unit's pass bar; judge it against that bar and say specifically what met it and what didn't. `review` lessons: run them with the `practice` skill — interleaved problems across the unit that don't name the idea they need, a minimal hint ladder, retests of every miss; no new material.
 
 ## 3. Wrap-up (≈ 3 min)
 
 1. **Teach-back**: "Explain today's key idea in two sentences, as if to a friend." (Producing the explanation consolidates it; correct gently.)
-2. `learn status` → report in 2 lines: progress bar, pace and speed, finish date. Celebrate real things (a hard idea that clicked, a streak) — truthfully.
+2. `learn status` → report in 2 lines: progress bar, pace and speed, finish date. Name real progress plainly (a hard idea that clicked, a streak) — no generic praise, no softening of what didn't land.
 3. Preview tomorrow in one line, so the next start is easy.
 4. `learn sync`.
 
@@ -79,7 +80,7 @@ Apply whenever the learner talks to you through a chat app (and by default if un
   B) …
   C) …
   D) …
-  (reply with a letter, or in your own words)
+  (a letter or your own words + how sure: 90 / 70 / 30 %)
   ```
   Never reveal the answer before they reply. After the reply: ✅/❌, the right option, a 1–2 sentence explanation, then the next question. If the environment offers answer buttons (Hermes `clarify`, a `quiz`/`ask_user_question` tool), use them — but the same no-leak rule holds.
 - **Check the format first.** `learn today` prints `chat_format plain|rich` (set with `learn config chat_format rich`).
@@ -97,6 +98,7 @@ Same flow. Math may use LaTeX (`$…$`) if the viewer renders it (Obsidian via `
 ## Principles to keep
 
 - Retrieval over re-reading; spacing over cramming; understanding over memorising (the `teach` skill).
-- Honest scores — an inflated score today is a hidden gap next month.
+- Honest scores — an inflated score today is a hidden gap next month. No praise inflation either: a wrong answer is named plainly.
+- The learner's reasoning and confidence are the data; the letter alone is one bit.
 - Never double lessons to "catch up". Missed days move the finish date, nothing more.
 - Small and finished beats long and abandoned: a 15-minute day still counts — record whatever was truly completed.

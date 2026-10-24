@@ -265,6 +265,27 @@ class TestReviews(Base):
         prog = json.loads((Path(self.home) / "plans/py/progress.json").read_text())
         self.assertEqual((prog["events"][-1]["quality"], prog["events"][-1]["scheduler"]), (5, "sm2"))
 
+    def test_confidence_caps_fragile_passes_and_flags_confident_misses(self):
+        self.run_cmd("card", "add", "--lesson", "L01", "--q", "q", "--a", "a")
+        self.run_cmd("card", "add", "--lesson", "L01", "--q", "q2", "--a", "a2")
+        out = self.run_cmd("review", "grade", "C001", "pass", "--quality", "5", "--confidence", "30", day="2026-10-06")
+        self.assertIn("q3", out)
+        self.assertIn("fragile", out)
+        out = self.run_cmd("review", "grade", "C002", "fail", "--confidence", "90", day="2026-10-06")
+        self.assertIn("confident miss", out)
+        prog = json.loads((Path(self.home) / "plans/py/progress.json").read_text())
+        self.assertEqual([(e["quality"], e["confidence"]) for e in prog["events"] if e["type"] == "review"],
+                         [(3, 30), (1, 90)])
+        before = (Path(self.home) / "plans/py/progress.json").read_text()
+        self.assertIn("0..100", self.run_cmd("review", "grade", "C001", "pass", "--confidence", "120",
+                                             day="2026-10-07", expect=1))
+        self.assertEqual((Path(self.home) / "plans/py/progress.json").read_text(), before)
+
+    def test_confident_pass_keeps_its_quality(self):
+        self.run_cmd("card", "add", "--lesson", "L01", "--q", "q", "--a", "a")
+        self.assertIn("q5", self.run_cmd("review", "grade", "C001", "pass", "--quality", "5", "--confidence", "95",
+                                         day="2026-10-06"))
+
     def test_overdue_review_uses_actual_answer_date(self):
         self.run_cmd("card", "add", "--lesson", "L01", "--q", "q", "--a", "a")
         self.run_cmd("review", "grade", "C001", "pass", day="2026-10-20")

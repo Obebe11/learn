@@ -43,7 +43,7 @@ You need five answers. Don't proceed on a vague goal ("learn AI", "get better at
 
 ### 2. Diagnostic — find where the learner actually is
 
-Run a short placement (4–8 questions, graded) following `teach` Phase 1a: bracket the edge — something they get right *and* something they miss — then stop. Record the result in `level` (one honest sentence) and in `profile.md`. Starting too low is boring, too high is demoralising; this is what prevents both.
+Run a short placement (4–8 questions, graded) following `teach` Phase 1a: bracket the edge — something they get right *and* something they miss — then stop. Ask for a confidence with each answer and open near the top of what the goal needs, not at the basics. Record the result in `level` (one honest sentence) and in `profile.md` — there as the per-strand summary from `teach` (**floor · ceiling · misconceptions · build from**), so later lessons start from the measured edge and know which wrong models to watch for. Starting too low is boring, too high is demoralising; this is what prevents both.
 
 ### 3. Scope the field (don't plan from memory)
 

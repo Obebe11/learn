@@ -361,11 +361,14 @@ TOOLS = [
     Tool("learn_review_grade", "Record closed-book recall immediately after the reply, before another question. "
          "SM-2 quality: 5 perfect, 4 correct, 3 correct but hard; 0..2 incorrect. Defaults: pass=4, fail=1. "
          "Calculates the next interval per card. Duplicate same-day grades do not advance it; early reviews are refused. "
-         "Never claim it is recorded until this succeeds.",
-         cli(["review", "grade"], opts=("plan", "quality"), pos=("card", "result")),
+         "Pass the learner's stated confidence when asked: a low-confidence pass is graded fragile, a high-confidence "
+         "fail is flagged as a misconception. Never claim it is recorded until this succeeds.",
+         cli(["review", "grade"], opts=("plan", "quality", "confidence"), pos=("card", "result")),
          {"card": CARD, "result": {"type": "string", "enum": ["pass", "fail"]}, "plan": PLAN,
           "quality": {"type": "integer", "minimum": 0, "maximum": 5,
-                      "description": "SM-2 quality 0..5; 3..5 requires pass, 0..2 requires fail"}},
+                      "description": "SM-2 quality 0..5; 3..5 requires pass, 0..2 requires fail"},
+          "confidence": {"type": "integer", "minimum": 0, "maximum": 100,
+                         "description": "learner's stated confidence 0..100 that the answer was right, given before the reveal"}},
          required=("card", "result")),
     Tool("learn_create", "Create a plan from a plan object (see the study-plan skill), or replace one with update=true "
                          "while keeping all progress. Validates and returns every problem at once.",
