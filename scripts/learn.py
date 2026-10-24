@@ -26,8 +26,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import time
-import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1114,15 +1112,11 @@ def cmd_today(args):
     emit(args, data, "\n".join(lines))
 
 
-MAX_PNG_BYTES = 1_000_000  # soft target: never shrink phone labels below 14 px
-
-
 def cmd_graph(args):
     st = Store(args)
-    slug, plan, prog = st.select_one(args.plan)
-    level, phone = args.level, args.format == "png" and not args.full
+    _, plan, prog = st.select_one(args.plan)
     try:
-        model = G.build_model(plan, prog, level, args.track)
+        model = G.build_model(plan, prog, args.level, args.track)
     except KeyError as e:
         raise LearnError(e.args[0])
     if args.track:
@@ -1134,51 +1128,8 @@ def cmd_graph(args):
     if args.json:
         print(json.dumps(model, ensure_ascii=False, indent=2))
         return
-    if args.format not in ("svg", "png"):
-        render = {"text": G.render_text, "md": G.render_md, "mermaid": G.render_mermaid}[args.format]
-        print(render(title, plan, prog, model, done, total))
-        return
-    if args.scale is not None and not 1 <= args.scale <= 4:
-        raise LearnError("--scale must be between 1 and 4")
-    out = Path(args.out) if args.out else st.plans_dir / slug / f"graph.{args.format}"
-    _, quota = day_quota(plan, prog, st.today)
-    picks = [l["id"] for l in G.day_plan(plan, prog, quota, iso(st.today), args.track)] if level == "lessons" else []
-
-    def draw(scale, max_px):
-        return G.render_svg(title, plan, prog, model, done, total, today=iso(st.today), picks=picks,
-                            lang=st.cfg.get("language", "en"), scale=scale, speed=speed_report(plan, prog, st.today),
-                            max_px=max_px)
-    if args.format == "svg":
-        write_text(out, draw(1, None))
-        print(out)
-        return
-    # png: phone size by default (2x, at most PHONE_PX wide); --scale or --full: exactly that density
-    scale = args.scale if args.scale is not None else (1 if args.full else 2)
-    max_px = G.PHONE_PX if phone and args.scale is None else None
-    svg_path = out.with_suffix(".svg")
-    while True:
-        svg = draw(scale, max_px)
-        if out.is_file() and svg_path.is_file() and out.stat().st_mtime >= svg_path.stat().st_mtime \
-                and svg_path.read_text(encoding="utf-8") == svg:
-            print("png: unchanged since the last render — cached", file=sys.stderr)
-            break
-        write_text(svg_path, svg)
-        t0 = time.monotonic()
-        try:
-            exe = G.svg_to_png(svg_path, out)
-        except RuntimeError as e:
-            raise LearnError(f"{e}\n(SVG saved at {svg_path})")
-        size = out.stat().st_size
-        print(f"png: {exe}, {time.monotonic() - t0:.1f} s, {size // 1024} KB", file=sys.stderr)
-        if exe != G.BEST_PNG:
-            print(f"png: tip — {G.PNG_TIP}", file=sys.stderr)
-        root = ET.fromstring(svg)
-        actual_scale = float(root.get("width")) / float(root.get("viewBox").split()[2])
-        min_scale = 14 / G.MIN_FONT
-        if not max_px or size <= MAX_PNG_BYTES or actual_scale <= min_scale + 0.001:
-            break
-        scale = max(min_scale, actual_scale * 0.75)
-    print(out)
+    render = {"text": G.render_text, "md": G.render_md, "mermaid": G.render_mermaid}[args.format]
+    print(render(title, plan, prog, model, done, total))
 
 
 def cmd_next(args):
@@ -2017,14 +1968,10 @@ def build_parser():
     p.add_argument("--track", help="graph plans: only this track (unit id)")
 
     p = add("graph", cmd_graph, "the knowledge map: tracks, junctions, what is ready/locked")
-    p.add_argument("--format", choices=["text", "md", "mermaid", "svg", "png"], default="text",
-                   help="text (chat code block), md (rich Markdown table), mermaid (Obsidian), svg/png (image file)")
+    p.add_argument("--format", choices=["text", "md", "mermaid"], default="text",
+                   help="text (chat code block), md (rich Markdown table), mermaid (Obsidian, diagram renderers)")
     p.add_argument("--level", choices=["lessons", "units"], default="lessons")
-    p.add_argument("-o", "--out", help="output file for svg/png (default: plans/<slug>/graph.<ext>)")
-    p.add_argument("--track", help="only this track (unit id), every lesson of it — readable on a phone")
-    p.add_argument("--scale", type=float, help="png: exact pixel density, 1..4 (default: fit a phone — 2x, at most 1400 px "
-                                               "wide; --full: 1)")
-    p.add_argument("--full", action="store_true", help="png: natural size, without the phone width/file-size limits")
+    p.add_argument("--track", help="only this track (unit id), every lesson of it")
 
     p = add("start", cmd_start, "set the plan's start date (default: today)")
     p.add_argument("--date", help="YYYY-MM-DD")

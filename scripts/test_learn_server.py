@@ -1,9 +1,7 @@
 """Tests for learn_server.py — run: python3 scripts/test_learn_server.py"""
-import base64
 import http.client
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -144,7 +142,7 @@ class TestProtocol(Base):
                   "result": "pass", "quality": 4, "confidence": 70, "slug": "py", "update": True, "date": "2026-10-05", "status": "active",
                   "content": "# me", "key": "language", "value": "ru", "language": "ru", "cta": "/x", "markdown": True,
                   "all": True, "limit": 5, "name": "teach", "json": True, "cards": [{"q": "q2", "a": "a2"}],
-                  "format": "svg", "scale": 1.5, "full": True, "text": "-stopped at step 2", "q": "-q", "a": "-a",
+                  "format": "md", "text": "-stopped at step 2", "q": "-q", "a": "-a",
                   "propositions": [{"statement": "-s", "name": "n", "kind": "truth"}], "fact": "P001", "facts": ["P001"],
                   "find": "-x*", "drafts": True, "statement": "-st", "alias": "-al", "kind": "truth",
                   "premises": ["P001"], "conclusion": "P002", "targets": ["P001"], "mode": "recall",
@@ -295,47 +293,7 @@ class TestSessionOverMcp(Base):
         self.create_plan()
         self.assertIn("Python basics", self.tool("learn_graph"))
         self.assertTrue(self.tool("learn_graph", {"view": "mermaid"}).startswith(("graph", "flowchart")))
-        self.tool("learn_graph", {"view": "png"}, expect_error=True)  # pictures come from learn_graph_image
-
-    def test_graph_image_svg_comes_back_as_a_resource_and_is_kept(self):
-        self.create_plan()
-        res = self.rpc("tools/call", {"name": "learn_graph_image", "arguments": {"format": "svg"}})["result"]
-        self.assertFalse(res["isError"], res)
-        svg = next(c["resource"] for c in res["content"] if c["type"] == "resource")
-        self.assertEqual(svg["mimeType"], "image/svg+xml")
-        self.assertIn("<svg", svg["text"])
-        self.assertIn("Python basics", svg["text"])
-        saved = os.path.join(self.home, "plans", "py", "graph.svg")
-        self.assertIn(saved, text_of(res))
-        self.assertTrue(os.path.exists(saved))
-
-    @unittest.skipUnless(shutil.which("rsvg-convert"), "needs rsvg-convert")
-    def test_graph_image_png_is_an_mcp_image_with_the_requested_density(self):
-        self.create_plan()
-        sizes = []
-        for scale in (1, 2):
-            res = self.rpc("tools/call", {"name": "learn_graph_image", "arguments": {"scale": scale}})["result"]
-            self.assertFalse(res["isError"], res)
-            img = next(c for c in res["content"] if c["type"] == "image")
-            self.assertEqual(img["mimeType"], "image/png")
-            data = base64.b64decode(img["data"])
-            self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
-            sizes.append(int.from_bytes(data[16:20], "big"))
-            self.assertIn(f"{sizes[-1]}×", text_of(res))
-        self.assertAlmostEqual(sizes[1], 2 * sizes[0], delta=2)
-
-    def test_graph_image_without_a_png_converter_is_a_readable_error(self):
-        self.create_plan()
-        old = os.environ["PATH"]
-        os.environ["PATH"] = self.tmp.name  # no rsvg-convert / inkscape / magick there
-        try:
-            err = self.tool("learn_graph_image", expect_error=True)
-        finally:
-            os.environ["PATH"] = old
-        self.assertIn("no working SVG", err)
-        self.assertIn("graph.svg", err)
-        self.assertEqual(self.tool("learn_graph_image", {"scale": 9}, expect_error=True),
-                         "scale must be between 1 and 4")
+        self.tool("learn_graph", {"view": "png"}, expect_error=True)  # the map is text only: no picture formats
 
     def test_cli_errors_come_back_as_tool_errors(self):
         self.create_plan()
@@ -462,18 +420,6 @@ class TestRest(Base):
         self.assertEqual(status, 400)
         self.assertEqual(self.http("GET", "/api/nothing")[0], 404)
 
-    def test_graph_image_over_rest(self):
-        self.call("learn_create", {"slug": "py", "plan": PLAN})
-        status, headers, data = self.http("GET", "/api/tools/learn_graph_image?format=svg&raw=1")
-        self.assertEqual(status, 200)
-        self.assertTrue(headers["Content-Type"].startswith("image/svg+xml"))
-        self.assertEqual(headers["Content-Security-Policy"], "script-src 'none'")
-        self.assertTrue(data.startswith(b"<svg"))
-        status, r = self.call("learn_graph_image", {"format": "svg"})
-        self.assertEqual(status, 200)
-        self.assertEqual(r["images"][0]["mimeType"], "image/svg+xml")
-        self.assertTrue(base64.b64decode(r["images"][0]["data"]).startswith(b"<svg"))
-
     def test_get_is_for_read_only_tools_and_coerces_the_query(self):
         self.call("learn_create", {"slug": "py", "plan": PLAN})
         status, r = self.call("learn_today", method="GET")
@@ -542,19 +488,12 @@ class TestStartup(unittest.TestCase):
             self.assertNotEqual(self.run_server("--token-file", str(f), "--port", "0").returncode, 0)
             self.assertNotEqual(self.run_server("--token-file", str(Path(d) / "missing"), "--port", "0").returncode, 0)
 
-    def test_warns_about_a_missing_home_and_a_slow_png_converter(self):
-        import shutil
-        real = shutil.which
+    def test_warns_about_a_missing_home(self):
         with tempfile.TemporaryDirectory() as d:
             core = S.Core(os.path.join(d, "learning"))
-            try:
-                shutil.which = lambda exe: None
-                self.assertEqual([w.split()[0] for w in S.startup_warnings(core)], [str(core.home), "rsvg-convert"])
-                shutil.which = lambda exe: f"/usr/bin/{exe}"
-                core.home.mkdir()
-                self.assertEqual(S.startup_warnings(core), [])
-            finally:
-                shutil.which = real
+            self.assertEqual([w.split()[0] for w in S.startup_warnings(core)], [str(core.home)])
+            core.home.mkdir()
+            self.assertEqual(S.startup_warnings(core), [])
 
 
 class TestStdio(unittest.TestCase):

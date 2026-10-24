@@ -15,7 +15,7 @@ All state lives in plain files managed by `learn` (stdlib Python; data dir `$LEA
 learn init --language ru --timezone Europe/Moscow     # once
 learn plans | status | week
 learn create <slug> --file plan.json  [--update]      # validates, renders PLAN.md
-learn graph [--format text|md|mermaid|svg|png] [--level lessons|units] [--track ID] [--full]   # the knowledge map; png = a phone-sized picture of all lessons (wide plans use a compact DAG; --level units: track summary; --track ID: one track in detail)
+learn graph [--format text|md|mermaid] [--level lessons|units] [--track ID]   # the knowledge map (--level units: track summary; --track ID: one track in detail)
 learn start [--date YYYY-MM-DD]                       # change the plan's start date (default: today)
 learn pause|resume|archive <slug>
 learn sync                                           # git-sync the data dir across devices
@@ -90,7 +90,7 @@ Before saving, self-check: every outcome has a lesson and a check; every lesson 
    - Put junctions in their own unit (e.g. `PR` "Projects") so the map shows them as a separate row; `objective` names the combined performance ("Build a bot that … using functions and prompts"), `check` is the artifact it must produce and the bar it must meet.
 4. Keep `requires` minimal: only real dependencies. Don't chain tracks together out of tidiness — that turns the graph back into a line.
 5. Pace: `lessons_per_day` counts across all tracks. For real variety use 2–3 shorter lessons (20 min), not one long one.
-6. Run `learn create`, read its warnings (cycles and unknown ids are errors; a "junction" that doesn't combine two tracks is a warning), then **show the map** before asking for approval: `learn graph` (text — put it in a code block in chat), `learn graph --format md` (table, for rich Telegram), `learn graph --format png` (an image to send; needs `rsvg-convert`), `--format mermaid` for Obsidian.
+6. Run `learn create`, read its warnings (cycles and unknown ids are errors; a "junction" that doesn't combine two tracks is a warning), then **show the map** before asking for approval: `learn graph` (text — put it in a code block in chat), `learn graph --format md` (table, for rich Telegram), `--format mermaid` for Obsidian.
 
 **Changing the graph later** (the learner decides to add a topic): add a new unit (a new track) and, when it makes sense, junction lessons that require lessons from it, then `learn create <slug> --file new.json --update`. Keep existing lesson ids stable. Converting an existing **linear** plan to a graph: set `"graph": true`; its units become parallel tracks, so add `requires` to the first lesson of any unit that must stay *after* the previous one (the CLI warns about exactly those).
 
@@ -159,7 +159,7 @@ Rules enforced by `learn create`: unique `L..`/`U..`/`O..` ids, `title`+`goal`, 
 
 ## Progress and review rhythm
 
-- **"How am I doing?"** → `learn status` (and `PLAN.md`): bar, pace, **speed** (average lessons/day so far ÷ the average the plan needs — by the deadline if there is one; 1.0× = on schedule, below = slower), projected finish, reviews due; for a graph plan also per-track progress and what is ready. Report plainly, lead with what's going well. If you can send images, add the map as a picture (`learn graph --format png` → send the printed path; remote server: `learn_graph_image`) — it shows the whole state at a glance. "Show me the map" → the same picture, or `learn graph` as text.
+- **"How am I doing?"** → `learn status` (and `PLAN.md`): bar, pace, **speed** (average lessons/day so far ÷ the average the plan needs — by the deadline if there is one; 1.0× = on schedule, below = slower), projected finish, reviews due; for a graph plan also per-track progress and what is ready. Report plainly, lead with what's going well. "Show me the map" → `learn graph` (text in a code block, or `--format md`).
 - **Weekly** (Sunday, or the rest day): `learn week`. Ask two questions: what felt solid, what keeps slipping? Adjust the *practice type or resource* for what's slipping — not just the schedule. Add or change lessons by editing the plan (see Revising). Read its review lines honestly: **long-term recall** (cards reviewed after a 21+ day gap) is the real test of retention — consistently below ~80 % means cards are too big or lessons too fast; **leeches** point at shaky foundations worth a repair lesson; many **new cards** with a review-backlog warning mean fewer cards per lesson.
 - **Behind schedule**: `learn` already shows `behind N`. Do **not** schedule catch-up doubles — cramming defeats spacing. The projected finish date simply moves; tell the learner that's fine. If they've been behind for 2+ weeks, offer: lighten to 1 lesson/day, pause (`learn pause`), or cut a unit.
 - **Failed lessons** come back automatically (`retry`) — the next session re-teaches the gaps first. Failed twice → revise the plan: insert a prerequisite lesson, split the lesson, or change its practice.
