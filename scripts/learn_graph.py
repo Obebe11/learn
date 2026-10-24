@@ -424,6 +424,31 @@ COMPACT_COLS, COMPACT_COL_W = 8, 116
 GOAL_R = 30
 GUTTER = 28  # lane-internal "bus" left of the nodes, for edges that pass nodes of their own lane
 
+# The map must look the same in every SVG→PNG converter. ImageMagick's built-in renderer (what `convert`
+# uses on a stock Ubuntu/Debian) ignores fill-/stroke-opacity, paint-order and markers, so the SVG uses
+# none of them: translucent colours are pre-mixed with the white page, halos are a separate text drawn
+# first, and arrowheads are polygons.
+
+
+def _tint(color, opacity):
+    """`color` at `opacity` over the white page, as one opaque hex colour."""
+    c = color.lstrip("#")
+    if len(c) == 3:
+        c = "".join(ch * 2 for ch in c)
+    rgb = (int(c[i:i + 2], 16) for i in (0, 2, 4))
+    return "#" + "".join(f"{round(255 - (255 - v) * opacity):02x}" for v in rgb)
+
+
+def _arrowhead(x, y, dx, dy, color, stroke_w=1.5):
+    """A filled arrowhead whose tip is just past the path end (x, y), pointing along (dx, dy)."""
+    norm = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / norm, dy / norm
+    length, half = 4.5 + 2 * stroke_w, 2 + 1.2 * stroke_w
+    tx, ty = x + ux * 1.5, y + uy * 1.5
+    bx, by = tx - ux * length, ty - uy * length
+    return (f'<polygon class="arrow" points="{tx:.1f},{ty:.1f} {bx - uy * half:.1f},{by + ux * half:.1f} '
+            f'{bx + uy * half:.1f},{by - ux * half:.1f}" fill="{color}"/>')
+
 
 def _to_gutter(x, y):
     """Path start: leave a node from its bottom and swing into the lane's left gutter."""
@@ -659,9 +684,14 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         return xml.escape(str(t))
 
     def text(x, y, s, size=11, fill=INK, weight="normal", anchor="start", halo=False, extra=""):
-        h = ' stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round" paint-order="stroke"' if halo else ""
-        return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size}" font-weight="{weight}" fill="{fill}" '
-                f'text-anchor="{anchor}"{h}{extra}>{esc(s)}</text>')
+        attrs = f'x="{x:.1f}" y="{y:.1f}" font-size="{size}" font-weight="{weight}" text-anchor="{anchor}"'
+        body = f'<text {attrs} fill="{fill}"{extra}>{esc(s)}</text>'
+        if not halo:
+            return body
+        # A white outline under the letters keeps a label readable over the edges. It is its own text,
+        # drawn first: `paint-order` would do the same in one element, but not every converter knows it.
+        return (f'<text {attrs} fill="#ffffff" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="round" '
+                f'aria-hidden="true">{esc(s)}</text>' + body)
 
     # --- header: title, overall progress, what to do next — wrapped, never cut ---
     head = []
@@ -679,7 +709,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         pw = max(_text_w(big, 16, True), _text_w(small, 11)) + 28
         px = width - margin - pw
         head.append(f'<g><title>{esc(big)} = {esc(small)}</title>'
-                    f'<rect x="{px:.1f}" y="14" width="{pw:.1f}" height="50" rx="10" fill="{tone}" fill-opacity="0.1" '
+                    f'<rect x="{px:.1f}" y="14" width="{pw:.1f}" height="50" rx="10" fill="{_tint(tone, 0.1)}" '
                     f'stroke="{tone}" stroke-width="1.5"/>'
                     + text(px + pw / 2, 36, big, 16, tone, "bold", "middle")
                     + text(px + pw / 2, 54, small, 11, tone, anchor="middle") + "</g>")
@@ -744,23 +774,20 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     W, H = width * scale, height * scale
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{math.ceil(W)}" height="{math.ceil(H)}" '
            f'viewBox="0 0 {width:.0f} {height:.0f}" font-family="{FONT}">',
-           f"<title>{esc(title)}</title>", "<defs>"]
-    for i, c in enumerate(TRACK_COLORS + [FAINT]):
-        out.append(f'<marker id="ar{i}" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="5.5" markerHeight="5.5" '
-                   f'orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="{c}"/></marker>')
-    out += ["</defs>", '<rect width="100%" height="100%" fill="#ffffff"/>'] + head
+           f"<title>{esc(title)}</title>"]
+    out += ['<rect width="100%" height="100%" fill="#ffffff"/>'] + head
 
     # --- columns: tinted lane, title, mini progress bar ---
     for i, tid in enumerate(cols if lanes else ()):
         t, c = tracks[tid], color(tid)
         x0 = left + i * col_w
         out.append(f'<rect x="{x0 + 4:.1f}" y="{top - 44:.1f}" width="{col_w - 8}" height="{body_h + 58}" rx="12" '
-                   f'fill="{c}" fill-opacity="0.045"/>')
+                   f'fill="{_tint(c, 0.045)}"/>')
         out.append(f'<rect x="{x0 + 4:.1f}" y="{top - 44:.1f}" width="{col_w - 8}" height="4" rx="2" fill="{c}"/>')
         for k, line in enumerate(_wrap(t["title"], 12, col_w - 28, 2, True)):
             out.append(text(x0 + 14, top - 22 + k * 15, line, 12, c, "bold"))
         bw = col_w - 80
-        out.append(f'<rect x="{x0 + 14:.1f}" y="{top + 4:.1f}" width="{bw}" height="6" rx="3" fill="{c}" fill-opacity="0.15"/>')
+        out.append(f'<rect x="{x0 + 14:.1f}" y="{top + 4:.1f}" width="{bw}" height="6" rx="3" fill="{_tint(c, 0.15)}"/>')
         if t["done"]:
             out.append(f'<rect x="{x0 + 14:.1f}" y="{top + 4:.1f}" width="{max(6, bw * t["done"] / t["total"]):.1f}" '
                        f'height="6" rx="3" fill="{c}"/>')
@@ -795,57 +822,59 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         return _smooth_path(points)
 
     edges_out = []
+
+    def edge(tag, geometry, tip, direction, color, width_=1.5, dash=""):
+        """One connection: a solid (pre-mixed) stroke and an arrowhead polygon at `tip`."""
+        dash = f' stroke-dasharray="{dash}"' if dash else ""
+        edges_out.append(f'<{tag} class="edge" {geometry} fill="none" stroke="{color}" stroke-width="{width_}"{dash}/>'
+                         + _arrowhead(*tip, *direction, color, width_))
+
     for a, b in model["edges"]:
         (x1, y1), (x2, y2) = xy(a), xy(b)
+        mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS)
         if row[b] <= row[a]:  # tracks that need each other in a circle: this arrow goes back up, round the left
-            mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS)
             sx, ex, bulge = x1 - radius(a) - 2, x2 - radius(b) - 3, 34
-            edges_out.append(f'<path d="M{sx:.1f},{y1:.1f} C{sx - bulge:.1f},{y1:.1f} {ex - bulge:.1f},{y2:.1f} '
-                             f'{ex:.1f},{y2:.1f}" fill="none" stroke="{TRACK_COLORS[mi]}" stroke-width="1.5" '
-                             f'stroke-opacity="0.6" stroke-dasharray="5 3" marker-end="url(#ar{mi})"/>')
+            edge("path", f'd="M{sx:.1f},{y1:.1f} C{sx - bulge:.1f},{y1:.1f} {ex - bulge:.1f},{y2:.1f} {ex:.1f},{y2:.1f}"',
+                 (ex, y2), (1, 0), _tint(TRACK_COLORS[mi], 0.6), dash="5 3")
             continue
         walked = nodes[a]["status"] in SATISFIED
         same = lanes and col[a] == col[b]
-        mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS)
-        stroke = TRACK_COLORS[mi]
         opacity = 0.9 if walked else (0.5 if not same else 1)
         width_ = 2.2 if same and in_col[col[a]].index(b) - in_col[col[a]].index(a) == 1 else 1.5
         if picks and (a in picks or b in picks):  # today's lessons: their edges stand out, the rest steps back
             opacity = 1
         elif picks:
             opacity = round(opacity * 0.55, 2)
-        style = f'fill="none" stroke="{stroke}" stroke-width="{width_}" stroke-opacity="{opacity}" marker-end="url(#ar{mi})"'
+        stroke = _tint(TRACK_COLORS[mi], opacity)
+        sx, sy, ex, ey = x1, y1 + radius(a) + 2, x2, y2 - radius(b) - 3
         if same:
             seq = in_col[col[a]]
             if seq.index(b) - seq.index(a) == 1:  # neighbours in the lane: a straight line
-                edges_out.append(f'<line x1="{x1:.1f}" y1="{y1 + radius(a) + 2:.1f}" x2="{x2:.1f}" '
-                                 f'y2="{y2 - radius(b) - 3:.1f}" {style}/>')
+                edge("line", f'x1="{x1:.1f}" y1="{sy:.1f}" x2="{x2:.1f}" y2="{ey:.1f}"', (x2, ey), (0, 1), stroke, width_)
             else:  # skips nodes of its own lane: down the left gutter, back in from the top
-                sy, ey = y1 + radius(a) + 2, y2 - radius(b) - 3
-                edges_out.append(f'<path d="{_to_gutter(x1, sy)} L{x1 - GUTTER:.1f},{ey - 28:.1f} '
-                                 f'C{x1 - GUTTER:.1f},{ey - 6:.1f} {x2:.1f},{ey - 14:.1f} {x2:.1f},{ey:.1f}" {style}/>')
+                edge("path", f'd="{_to_gutter(x1, sy)} L{x1 - GUTTER:.1f},{ey - 28:.1f} '
+                     f'C{x1 - GUTTER:.1f},{ey - 6:.1f} {x2:.1f},{ey - 14:.1f} {x2:.1f},{ey:.1f}"',
+                     (x2, ey), (0, 1), stroke, width_)
             continue
-        sx, sy, ex, ey = x1, y1 + radius(a) + 2, x2, y2 - radius(b) - 3
         if compact:
-            edges_out.append(f'<path d="{flow_path(a, b)}" {style}/>')
+            geometry = f'd="{flow_path(a, b)}"'
         else:
             bend = min(max(28.0, (ey - sy) * 0.5), ROW_H * 1.2)
-            edges_out.append(f'<path d="M{sx:.1f},{sy:.1f} C{sx:.1f},{sy + bend:.1f} {ex:.1f},{ey - bend:.1f} '
-                             f'{ex:.1f},{ey:.1f}" {style}/>')
+            geometry = f'd="M{sx:.1f},{sy:.1f} C{sx:.1f},{sy + bend:.1f} {ex:.1f},{ey - bend:.1f} {ex:.1f},{ey:.1f}"'
+        edge("path", geometry, (ex, ey), (0, 1), stroke, width_)
     # every branch ends in the goal: down its own lane (through the left gutter when the lane goes on), then in
+    goal_tip = (gx, gy - GOAL_R - 3)
     for a in sinks:
         x1, y1 = xy(a)
         walked = nodes[a]["status"] in SATISFIED
         mi = tindex[nodes[a]["unit"]] % len(TRACK_COLORS)
-        style = (f'fill="none" stroke="{TRACK_COLORS[mi]}" stroke-width="1.6" stroke-opacity="{0.9 if walked else 0.45}" '
-                 f'marker-end="url(#ar{mi})"')
+        stroke = _tint(TRACK_COLORS[mi], 0.9 if walked else 0.45)
         sy = y1 + radius(a) + 2
         if compact:
             # Earlier leaves end naturally. Only the bottom frontier joins the goal summary;
             # artificial full-height rails would turn the map back into straight columns.
             if row[a] == nrows - 1:
-                path = _smooth_path([(x1, sy), (gx, gy - GOAL_R - 3)])
-                edges_out.append(f'<path d="{path}" {style}/>')
+                edge("path", f'd="{_smooth_path([(x1, sy), goal_tip])}"', goal_tip, (0, 1), stroke, 1.6)
             continue
         if not lanes or in_col[col[a]][-1] == a:
             lane = f"M{x1:.1f},{sy:.1f} L{x1:.1f},{lane_bottom - 6:.1f}"
@@ -854,8 +883,8 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
             lane = _to_gutter(x1, sy)
             lane += f" L{x1 - gutter:.1f},{lane_bottom - 6:.1f}"
             x1 -= gutter
-        edges_out.append(f'<path d="{lane} C{x1:.1f},{lane_bottom + 24:.1f} {gx:.1f},{gy - GOAL_R - 36:.1f} '
-                         f'{gx:.1f},{gy - GOAL_R - 3:.1f}" {style}/>')
+        edge("path", f'd="{lane} C{x1:.1f},{lane_bottom + 24:.1f} {gx:.1f},{gy - GOAL_R - 36:.1f} '
+             f'{gx:.1f},{gy - GOAL_R - 3:.1f}"', goal_tip, (0, 1), stroke, 1.6)
     out += edges_out
 
     # --- nodes ---
@@ -863,7 +892,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         x, y = xy(nid)
         c, st = color(n["unit"]), n["status"]
         r = radius(nid)
-        fill, ring, ring_op, idc, labc, weight = {
+        fill, ring, _, idc, labc, weight = {
             "done": (STATUS_FILL["done"], c, 1, INK, INK, "normal"),
             "available": (STATUS_FILL["available"], c, 1, INK, INK, "bold"),
             "retry": (STATUS_FILL["retry"], c, 1, INK, "#bf360c", "bold"),
@@ -874,9 +903,9 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
         if nid in picks:
             g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r + 7}" fill="none" stroke="{TODAY}" stroke-width="3"/>')
         elif st in ("available", "retry"):
-            g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r + 6}" fill="{ring}" fill-opacity="0.16"/>')
+            g.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r + 6}" fill="{_tint(ring, 0.16)}"/>')
         dash = ' stroke-dasharray="4 3"' if st == "skipped" else ""
-        common = f'fill="{fill}" stroke="{ring}" stroke-opacity="{ring_op}" stroke-width="3"{dash}'
+        common = f'fill="{fill}" stroke="{ring}" stroke-width="3"{dash}'
         if junction(nid):
             g.append(f'<polygon points="{x:.1f},{y - r:.1f} {x + r:.1f},{y:.1f} {x:.1f},{y + r:.1f} {x - r:.1f},{y:.1f}" '
                      f'stroke-linejoin="round" {common}/>')
@@ -902,10 +931,10 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     finished = bool(total) and done == total
     ring = "#2e7d32" if finished else INK
     out.append(f'<g><title>{esc(L["goal"])}: {esc(goal_text)}</title>'
-               f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="{GOAL_R + 7}" fill="{ring}" fill-opacity="0.08"/>'
+               f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="{GOAL_R + 7}" fill="{_tint(ring, 0.08)}"/>'
                f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="{GOAL_R}" fill="{"#43a047" if finished else "#ffffff"}" '
                f'stroke="{ring}" stroke-width="3.5"/>'
-               f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="{GOAL_R - 6}" fill="none" stroke="{ring}" stroke-opacity="0.25" '
+               f'<circle cx="{gx:.1f}" cy="{gy:.1f}" r="{GOAL_R - 6}" fill="none" stroke="{_tint(ring, 0.25)}" '
                f'stroke-width="1.5"/>'
                + text(gx, gy + 5, f"{pct}%", 14, "#ffffff" if finished else INK, "bold", "middle") + "</g>")
     for k, line in enumerate(goal_lines):
@@ -914,7 +943,7 @@ def render_svg(title, plan, prog, model, done=None, total=None, today=None, pick
     # --- legend ---
     ly = gy + GOAL_R + 24 + 17 * len(goal_lines) + 22
     swatch = [("done", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{STATUS_FILL["done"]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
-              ("available", f'<circle cx="{{x}}" cy="{ly}" r="10" fill="{TRACK_COLORS[0]}" fill-opacity="0.16"/>'
+              ("available", f'<circle cx="{{x}}" cy="{ly}" r="10" fill="{_tint(TRACK_COLORS[0], 0.16)}"/>'
                             f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{STATUS_FILL["available"]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
               ("retry", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{STATUS_FILL["retry"]}" stroke="{TRACK_COLORS[0]}" stroke-width="2"/>'),
               ("locked", f'<circle cx="{{x}}" cy="{ly}" r="7" fill="{STATUS_FILL["locked"]}" stroke="{TRACK_COLORS[0]}" '
@@ -956,8 +985,8 @@ def svg_to_png(svg_path, png_path):
     attempts = [
         (BEST_PNG, [BEST_PNG, "-o", png_path, svg_path]),
         ("inkscape", ["inkscape", svg_path, "--export-type=png", f"--export-filename={png_path}"]),
-        ("magick", ["magick", "-background", "white", svg_path, png_path]),
-        ("convert", ["convert", "-background", "white", svg_path, png_path]),
+        ("magick", ["magick", "-background", "white", svg_path, "-depth", "8", png_path]),  # 16-bit by default
+        ("convert", ["convert", "-background", "white", svg_path, "-depth", "8", png_path]),  # 16-bit by default
     ]
     tried = []
     for exe, cmd in attempts:
